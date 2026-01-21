@@ -58,6 +58,14 @@ def get_ollama_status() -> str:
         return "Unavailable"
 
 
+def get_k_threshold() -> int | None:
+    try:
+        settings = call_backend("GET", "/settings")
+        return settings.get("k_threshold")
+    except requests.RequestException:
+        return None
+
+
 st.sidebar.markdown("### LLM Status")
 st.sidebar.write(get_ollama_status())
 
@@ -155,13 +163,39 @@ with tabs[2]:
     except requests.RequestException as exc:
         themes = []
         st.error(f"Failed to load themes: {format_backend_error(exc)}")
-    theme_options = [item["theme"] for item in themes] if isinstance(themes, list) else []
-    theme = st.selectbox("Theme", options=theme_options if theme_options else ["No themes"])
+    count_by_theme = {
+        item.get("theme"): item.get("count", 0)
+        for item in themes
+        if isinstance(item, dict)
+    }
+    theme_options = list(count_by_theme.keys()) if count_by_theme else []
+    theme = st.selectbox(
+        "Theme",
+        options=theme_options if theme_options else ["No themes"],
+        format_func=lambda name: (
+            f"{name} ({count_by_theme.get(name, 0)} records)"
+            if name != "No themes"
+            else "No themes"
+        ),
+    )
     kind = st.selectbox("Kind", options=["enquiry", "persona", "scenario"])
     count = st.slider("Count", min_value=1, max_value=10, value=5)
-    if st.button("Generate"):
+    k_threshold = get_k_threshold()
+    if k_threshold is not None:
+        st.info(f"Minimum records per theme: {k_threshold}.")
+    selected_count = count_by_theme.get(theme, 0) if theme != "No themes" else 0
+    is_below_threshold = (
+        k_threshold is not None and theme != "No themes" and selected_count < k_threshold
+    )
+    if is_below_threshold:
+        st.warning(
+            f"Theme has {selected_count} records; need at least {k_threshold} to generate."
+        )
+    if st.button("Generate", disabled=theme == "No themes" or is_below_threshold):
         if theme == "No themes":
             st.warning("Load data and rebuild patterns first.")
+        elif is_below_threshold:
+            st.warning("Select a theme that meets the minimum record threshold.")
         else:
             try:
                 payload = {"theme": theme, "kind": kind, "count": count}
