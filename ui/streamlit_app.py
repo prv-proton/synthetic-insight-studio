@@ -92,7 +92,11 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Generate synthetic context pack")
     st.caption("Outputs are synthetic and privacy-safe, with k-threshold enforcement.")
-    themes = call_backend("GET", "/themes")
+    try:
+        themes = call_backend("GET", "/themes")
+    except requests.RequestException as exc:
+        themes = []
+        st.error(f"Failed to load themes: {exc}")
     theme_options = [item["theme"] for item in themes] if isinstance(themes, list) else []
     theme = st.selectbox("Theme", options=theme_options if theme_options else ["No themes"])
     kind = st.selectbox("Kind", options=["enquiry", "persona", "scenario"])
