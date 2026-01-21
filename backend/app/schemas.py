@@ -27,6 +27,7 @@ class GenerateRequest(BaseModel):
     theme: str
     kind: str
     count: int = 5
+    allow_below_threshold: bool = True
 
 
 class GeneratedItem(BaseModel):

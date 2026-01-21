@@ -118,10 +118,17 @@ def insert_audit(event_type: str, payload: Dict[str, Any]) -> None:
 
 def get_themes_summary() -> List[Dict[str, Any]]:
     with _connect() as conn:
-        cursor = conn.execute(
-            "SELECT theme, COUNT(*) as count FROM enquiries GROUP BY theme"
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        cursor = conn.execute("SELECT theme, pattern_json FROM patterns")
+        results: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            pattern = json.loads(row["pattern_json"])
+            results.append(
+                {
+                    "theme": row["theme"],
+                    "count": pattern.get("count", 0),
+                }
+            )
+        return results
 
 
 def get_pattern(theme: str) -> Optional[Dict[str, Any]]:

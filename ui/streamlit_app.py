@@ -157,7 +157,7 @@ with tabs[1]:
 
 with tabs[2]:
     st.subheader("Generate synthetic context pack")
-    st.caption("Outputs are synthetic and privacy-safe, with k-threshold enforcement.")
+    st.caption("Outputs are synthetic and privacy-safe.")
     try:
         themes = call_backend("GET", "/themes")
     except requests.RequestException as exc:
@@ -187,18 +187,30 @@ with tabs[2]:
     is_below_threshold = (
         k_threshold is not None and theme != "No themes" and selected_count < k_threshold
     )
+    allow_below_threshold = True
     if is_below_threshold:
-        st.warning(
-            f"Theme has {selected_count} records; need at least {k_threshold} to generate."
+        st.info(f"{selected_count} record(s) available for this theme.")
+        enforce_threshold = st.checkbox(
+            "Enforce minimum record threshold",
+            value=False,
         )
-    if st.button("Generate", disabled=theme == "No themes" or is_below_threshold):
+        allow_below_threshold = not enforce_threshold
+    if st.button(
+        "Generate",
+        disabled=theme == "No themes",
+    ):
         if theme == "No themes":
             st.warning("Load data and rebuild patterns first.")
         elif is_below_threshold:
             st.warning("Select a theme that meets the minimum record threshold.")
         else:
             try:
-                payload = {"theme": theme, "kind": kind, "count": count}
+                payload = {
+                    "theme": theme,
+                    "kind": kind,
+                    "count": count,
+                    "allow_below_threshold": allow_below_threshold,
+                }
                 result = call_backend("POST", "/generate", payload)
                 st.success("Generated synthetic outputs.")
                 st.write(result.get("disclaimer"))
