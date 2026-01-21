@@ -44,6 +44,18 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS theme_counts (
+                theme TEXT PRIMARY KEY,
+                count_low INTEGER NOT NULL,
+                count_medium INTEGER NOT NULL,
+                count_high INTEGER NOT NULL,
+                count_total INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS generated (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 theme TEXT NOT NULL,
@@ -116,16 +128,111 @@ def insert_audit(event_type: str, payload: Dict[str, Any]) -> None:
         )
 
 
-def get_themes_summary() -> List[Dict[str, Any]]:
+def upsert_theme_counts(counts: Iterable[Dict[str, Any]]) -> None:
+    now = datetime.utcnow().isoformat()
+    payload = []
+    for entry in counts:
+        theme = entry["theme"]
+        count_low = int(entry.get("count_low", 0))
+        count_medium = int(entry.get("count_medium", 0))
+        count_high = int(entry.get("count_high", 0))
+        count_total = count_low + count_medium + count_high
+        payload.append((theme, count_low, count_medium, count_high, count_total, now))
+    if not payload:
+        return
     with _connect() as conn:
-        cursor = conn.execute("SELECT theme, pattern_json FROM patterns")
+        conn.executemany(
+            """
+            INSERT INTO theme_counts (
+                theme,
+                count_low,
+                count_medium,
+                count_high,
+                count_total,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(theme) DO UPDATE SET
+                count_low = count_low + excluded.count_low,
+                count_medium = count_medium + excluded.count_medium,
+                count_high = count_high + excluded.count_high,
+                count_total = count_total + excluded.count_total,
+                updated_at = excluded.updated_at
+            """,
+            payload,
+        )
+
+
+def get_theme_counts() -> List[Dict[str, Any]]:
+    with _connect() as conn:
+        cursor = conn.execute("SELECT * FROM theme_counts")
         results: List[Dict[str, Any]] = []
         for row in cursor.fetchall():
-            pattern = json.loads(row["pattern_json"])
             results.append(
                 {
                     "theme": row["theme"],
-                    "count": pattern.get("count", 0),
+                    "count_low": row["count_low"],
+                    "count_medium": row["count_medium"],
+                    "count_high": row["count_high"],
+                    "count_total": row["count_total"],
+                }
+            )
+        if results:
+            return results
+        cursor = conn.execute("SELECT theme, pattern_json FROM patterns")
+        for row in cursor.fetchall():
+            pattern = json.loads(row["pattern_json"])
+            count_total = int(pattern.get("count_total") or pattern.get("count", 0))
+            results.append(
+                {
+                    "theme": row["theme"],
+                    "count_low": count_total,
+                    "count_medium": 0,
+                    "count_high": 0,
+                    "count_total": count_total,
+                }
+            )
+        return results
+
+
+def get_theme_count(theme: str) -> Optional[Dict[str, Any]]:
+    with _connect() as conn:
+        cursor = conn.execute("SELECT * FROM theme_counts WHERE theme = ?", (theme,))
+        row = cursor.fetchone()
+        if not row:
+            cursor = conn.execute(
+                "SELECT theme, pattern_json FROM patterns WHERE theme = ?", (theme,)
+            )
+            pattern_row = cursor.fetchone()
+            if not pattern_row:
+                return None
+            pattern = json.loads(pattern_row["pattern_json"])
+            count_total = int(pattern.get("count_total") or pattern.get("count", 0))
+            return {
+                "theme": theme,
+                "count_low": count_total,
+                "count_medium": 0,
+                "count_high": 0,
+                "count_total": count_total,
+            }
+        return {
+            "theme": row["theme"],
+            "count_low": row["count_low"],
+            "count_medium": row["count_medium"],
+            "count_high": row["count_high"],
+            "count_total": row["count_total"],
+        }
+
+
+def get_themes_summary() -> List[Dict[str, Any]]:
+    with _connect() as conn:
+        cursor = conn.execute("SELECT * FROM theme_counts")
+        results: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            results.append(
+                {
+                    "theme": row["theme"],
+                    "count": row["count_total"],
                 }
             )
         return results
@@ -201,5 +308,6 @@ def clear_all() -> None:
         conn.execute("DELETE FROM enquiries")
         conn.execute("DELETE FROM enquiries_raw")
         conn.execute("DELETE FROM patterns")
+        conn.execute("DELETE FROM theme_counts")
         conn.execute("DELETE FROM generated")
         conn.execute("DELETE FROM audit")

@@ -15,6 +15,17 @@ class IngestRequest(BaseModel):
 class ThemeSummary(BaseModel):
     theme: str
     count: int
+    count_total: int
+    count_low: int
+    count_medium: int
+    count_high: int
+    meets_k: bool
+    high_ratio: float
+    high_dominant: bool
+    text_available_count: int
+    patterns_available: bool
+    insight_quality: str
+    message: Optional[str] = None
 
 
 class PatternResponse(BaseModel):

@@ -2,6 +2,7 @@ import json
 import os
 from typing import Any, Dict, List
 
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -141,7 +142,11 @@ with tabs[0]:
 
 with tabs[1]:
     st.subheader("Pattern overview")
-    st.caption("Themes only appear after rebuild; no raw text is shown.")
+    st.caption("Themes are shown from aggregate counts; no raw text is displayed.")
+    st.info(
+        "High-risk uploads are parsed and counted, but their text is not stored. "
+        "Themes remain visible to support early discovery."
+    )
     if st.button("Rebuild patterns"):
         try:
             result = call_backend("POST", "/patterns/rebuild")
@@ -153,7 +158,43 @@ with tabs[1]:
         summary = call_backend("GET", "/themes")
     except requests.RequestException:
         summary = []
-    st.table(summary)
+    if summary:
+        table_rows = []
+        for item in summary:
+            labels = []
+            if item.get("high_dominant"):
+                labels.append("HIGH-RISK DOMINANT")
+            if item.get("insight_quality") == "COUNTS_ONLY":
+                labels.append("COUNTS ONLY")
+            label_text = f" ({' / '.join(labels)})" if labels else ""
+            theme_label = f"⚠️ {item.get('theme')}{label_text}" if labels else item.get("theme")
+            table_rows.append(
+                {
+                    "theme": theme_label,
+                    "total": item.get("count_total", item.get("count", 0)),
+                    "low": item.get("count_low", 0),
+                    "medium": item.get("count_medium", 0),
+                    "high": item.get("count_high", 0),
+                    "meets_k": item.get("meets_k", False),
+                    "high_ratio": f"{item.get('high_ratio', 0):.2f}",
+                    "insight_quality": item.get("insight_quality", "UNKNOWN"),
+                }
+            )
+        df = pd.DataFrame(table_rows)
+
+        def highlight_row(row: pd.Series) -> List[str]:
+            if "HIGH-RISK DOMINANT" in str(row["theme"]):
+                return ["background-color: #fff3cd"] * len(row)
+            if "COUNTS ONLY" in str(row["theme"]):
+                return ["background-color: #f8d7da"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(
+            df.style.apply(highlight_row, axis=1),
+            use_container_width=True,
+        )
+    else:
+        st.info("No themes available yet. Load data to see counts.")
 
 with tabs[2]:
     st.subheader("Generate synthetic context pack")
@@ -163,8 +204,11 @@ with tabs[2]:
     except requests.RequestException as exc:
         themes = []
         st.error(f"Failed to load themes: {format_backend_error(exc)}")
+    theme_details = {
+        item.get("theme"): item for item in themes if isinstance(item, dict)
+    }
     count_by_theme = {
-        item.get("theme"): item.get("count", 0)
+        item.get("theme"): item.get("count_total", item.get("count", 0))
         for item in themes
         if isinstance(item, dict)
     }
@@ -187,6 +231,14 @@ with tabs[2]:
     is_below_threshold = (
         k_threshold is not None and theme != "No themes" and selected_count < k_threshold
     )
+    selected_theme = theme_details.get(theme)
+    if selected_theme and (
+        selected_theme.get("insight_quality") == "COUNTS_ONLY"
+        or selected_theme.get("high_dominant")
+    ):
+        st.warning(
+            "This theme is mostly high-risk. Generation will be generic and labeled lower confidence."
+        )
     allow_below_threshold = True
     if is_below_threshold:
         st.info(f"{selected_count} record(s) available for this theme.")
@@ -214,6 +266,10 @@ with tabs[2]:
                 result = call_backend("POST", "/generate", payload)
                 st.success("Generated synthetic outputs.")
                 st.write(result.get("disclaimer"))
+                if result.get("confidence"):
+                    st.write(f"Confidence: {result.get('confidence')}")
+                if result.get("note"):
+                    st.info(result.get("note"))
                 st.write(result.get("items", []))
             except requests.RequestException as exc:
                 st.error(f"Generation failed: {format_backend_error(exc)}")

@@ -71,6 +71,16 @@ def _sentiment_proxy(texts: Iterable[str]) -> Dict[str, int]:
     return {"negative": negative, "positive": positive}
 
 
+def build_pattern(texts: Iterable[str]) -> Dict[str, object]:
+    text_list = list(texts)
+    return {
+        "count": len(text_list),
+        "top_terms": _top_terms(text_list),
+        "common_phrases": _common_phrases(text_list),
+        "sentiment_proxy": _sentiment_proxy(text_list),
+    }
+
+
 def extract_patterns(enquiries: Iterable[str]) -> Dict[str, Dict[str, object]]:
     per_theme: Dict[str, List[str]] = {}
     for text in enquiries:
@@ -79,10 +89,5 @@ def extract_patterns(enquiries: Iterable[str]) -> Dict[str, Dict[str, object]]:
 
     patterns: Dict[str, Dict[str, object]] = {}
     for theme, texts in per_theme.items():
-        patterns[theme] = {
-            "count": len(texts),
-            "top_terms": _top_terms(texts),
-            "common_phrases": _common_phrases(texts),
-            "sentiment_proxy": _sentiment_proxy(texts),
-        }
+        patterns[theme] = build_pattern(texts)
     return patterns
