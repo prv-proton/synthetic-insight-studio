@@ -1,5 +1,6 @@
 import json
 import os
+from urllib.parse import quote
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -23,13 +24,17 @@ def call_backend(method: str, path: str, payload: Dict[str, Any] | None = None) 
     return response.json()
 
 
-def call_backend_files(path: str, files: List[st.runtime.uploaded_file_manager.UploadedFile]) -> Dict[str, Any]:
+def call_backend_files(
+    path: str,
+    files: List[st.runtime.uploaded_file_manager.UploadedFile],
+    params: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     url = f"{backend_url}{path}"
     payload = [
         ("files", (file.name, file.getvalue(), file.type or "text/plain"))
         for file in files
     ]
-    response = requests.post(url, files=payload, timeout=10)
+    response = requests.post(url, files=payload, params=params, timeout=10)
     response.raise_for_status()
     return response.json()
 
@@ -142,13 +147,10 @@ with tabs[0]:
                     st.write("Risk explanation:")
                     st.write(", ".join(item.get("risk_reasons", [])))
                     st.write(f"Redaction summary: {item.get('redaction_counts', {})}")
-                    if item.get("risk_level") == "HIGH":
-                        st.info("Preview disabled for HIGH risk content.")
-                    else:
-                        toggle_key = f"preview_{index}"
-                        if st.toggle("Preview sanitized snippet", value=False, key=toggle_key):
-                            sanitized_text = item.get("sanitized_text") or ""
-                            st.code(sanitized_text[:300])
+                    toggle_key = f"preview_{index}"
+                    if st.toggle("Preview sanitized snippet", value=False, key=toggle_key):
+                        sanitized_text = item.get("sanitized_text") or ""
+                        st.code(sanitized_text[:300])
         except requests.RequestException as exc:
             st.error(f"Upload failed: {format_backend_error(exc)}")
 
@@ -157,6 +159,7 @@ with tabs[1]:
     st.info(
         "This does not classify or store content. It only masks sensitive data for review."
     )
+    extract_snippets = st.checkbox("Extract inspiration snippets", value=False)
     sanitize_source_type = st.selectbox(
         "Source type",
         options=["auto", "plain", "email"],
@@ -174,12 +177,18 @@ with tabs[1]:
     if st.button("Mask sensitive info"):
         try:
             if sanitize_files:
-                result = call_backend_files("/sanitize", sanitize_files)
+                mode = "mask_and_extract_evidence" if extract_snippets else "mask_only"
+                result = call_backend_files("/sanitize", sanitize_files, params={"mode": mode})
             elif sanitize_text.strip():
+                mode = "mask_and_extract_evidence" if extract_snippets else "mask_only"
                 result = call_backend(
                     "POST",
                     "/sanitize",
-                    {"text": sanitize_text, "source_type": sanitize_source_type},
+                    {
+                        "text": sanitize_text,
+                        "source_type": sanitize_source_type,
+                        "mode": mode,
+                    },
                 )
             else:
                 st.warning("Provide text or upload a file to sanitize.")
@@ -194,28 +203,48 @@ with tabs[1]:
                             )
                             st.write("Normalization metadata:")
                             st.json(item.get("normalization_meta"))
-                            st.write("Redaction stats:")
-                            st.table([item.get("redaction_stats", {})])
+                            st.write("Tag redaction stats:")
+                            st.table([item.get("tag_redaction_stats", {})])
+                            st.write("PII redaction stats:")
+                            st.table([item.get("pii_redaction_stats", {})])
                             st.text_area(
                                 "Sanitized text",
                                 value=item.get("sanitized_text", ""),
                                 height=300,
                                 disabled=True,
                             )
+                            evidence_snippets = item.get("evidence_snippets")
+                            if evidence_snippets:
+                                st.write("Inspiration snippets:")
+                                for snippet in evidence_snippets:
+                                    st.code(snippet)
+                                st.caption(
+                                    "Snippets are extracted only from masked text; nothing is stored."
+                                )
                 else:
                     st.write(
                         f"Inferred source type: {result.get('inferred_source_type')}"
                     )
                     st.write("Normalization metadata:")
                     st.json(result.get("normalization_meta"))
-                    st.write("Redaction stats:")
-                    st.table([result.get("redaction_stats", {})])
+                    st.write("Tag redaction stats:")
+                    st.table([result.get("tag_redaction_stats", {})])
+                    st.write("PII redaction stats:")
+                    st.table([result.get("pii_redaction_stats", {})])
                     st.text_area(
                         "Sanitized text",
                         value=result.get("sanitized_text", ""),
                         height=300,
                         disabled=True,
                     )
+                    evidence_snippets = result.get("evidence_snippets")
+                    if evidence_snippets:
+                        st.write("Inspiration snippets:")
+                        for snippet in evidence_snippets:
+                            st.code(snippet)
+                        st.caption(
+                            "Snippets are extracted only from masked text; nothing is stored."
+                        )
         except requests.RequestException as exc:
             st.error(f"Sanitize failed: {format_backend_error(exc)}")
 
@@ -318,9 +347,6 @@ with tabs[3]:
         st.warning(
             "This theme is mostly high-risk. Generation will be generic and labeled lower confidence."
         )
-    allow_below_threshold = True
-    if is_below_threshold:
-        st.info(f"{selected_count} record(s) available for this theme.")
     if st.button(
         "Generate",
         disabled=theme == "No themes",
@@ -333,7 +359,7 @@ with tabs[3]:
                     "theme": theme,
                     "kind": kind,
                     "count": count,
-                    "allow_below_threshold": allow_below_threshold,
+                    "allow_below_threshold": True,
                 }
                 result = call_backend("POST", "/generate", payload)
                 st.success("Generated synthetic outputs.")
@@ -345,6 +371,58 @@ with tabs[3]:
                 st.write(result.get("items", []))
             except requests.RequestException as exc:
                 st.error(f"Generation failed: {format_backend_error(exc)}")
+
+    st.markdown("---")
+    st.subheader("Evidence grounding")
+    st.caption("Evidence is derived from masked text or aggregate patterns only.")
+    evidence_mode = st.radio(
+        "Evidence source",
+        options=["Aggregated evidence cards", "Upload sample for masked snippets"],
+        horizontal=True,
+    )
+    if evidence_mode == "Aggregated evidence cards":
+        if theme == "No themes":
+            st.info("Select a theme to load evidence cards.")
+        elif st.button("Load evidence cards"):
+            try:
+                cards_response = call_backend(
+                    "GET", f"/evidence/cards?theme={quote(theme)}"
+                )
+                cards = cards_response.get("evidence_cards", [])
+                if cards:
+                    for card in cards:
+                        st.markdown(f"**{card.get('title')}**")
+                        st.write(card.get("detail"))
+                        st.caption(f"Confidence: {card.get('confidence')}")
+                else:
+                    st.info("No evidence cards available.")
+            except requests.RequestException as exc:
+                st.error(f"Failed to load evidence cards: {format_backend_error(exc)}")
+    else:
+        sample_file = st.file_uploader(
+            "Upload a sample .txt or .eml file for masked snippets",
+            type=["txt", "eml"],
+        )
+        if sample_file and st.button("Extract masked snippets"):
+            try:
+                result = call_backend_files(
+                    "/sanitize",
+                    [sample_file],
+                    params={"mode": "mask_and_extract_evidence"},
+                )
+                items = result.get("items", [])
+                evidence_snippets = items[0].get("evidence_snippets") if items else []
+                if evidence_snippets:
+                    st.write("Masked inspiration snippets:")
+                    for snippet in evidence_snippets:
+                        st.code(snippet)
+                else:
+                    st.info("No snippets extracted from the sample.")
+                st.caption(
+                    "Snippets are extracted only from masked text; nothing is stored."
+                )
+            except requests.RequestException as exc:
+                st.error(f"Snippet extraction failed: {format_backend_error(exc)}")
 
 with tabs[4]:
     st.subheader("Export markdown")

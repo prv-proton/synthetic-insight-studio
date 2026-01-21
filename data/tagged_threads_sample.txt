@@ -1,0 +1,29 @@
+Subject: Permit enquiry re [[PII:ADDRESS]] 1186 Cedar Ridge Ave, Victoria, BC
+From: [[PII:NAME]] Naixin Wu <[[PII:EMAIL]] naixin.wu@example.ca>
+Phone: [[PII:PHONE]] (250) 555-0198
+PID: [[PII:PARCEL_ID]] 009-671-324
+File: [[PII:FILE_NO]] DP-24-1682
+
+Questions:
+- Can we expedite review on the driveway variance?
+- Are there remaining items for the servicing agreement?
+
+Blocking items:
+- [[SENSITIVE:AGENCY_COMMENT]] Engineering asked for a stormwater plan update.
+- [[CONFIDENTIAL:FINANCING]] Pending lender confirmation on construction draw.
+
+---
+
+Subject: Follow-up on permit file [[PII:FILE_NO]] BP-25-0413
+Hello team,
+
+[[PII:NAME]] Alex Chen checking on status summary for the above file.
+We need to confirm that [[PII:ADDRESS]] 42 Bayview Rd, Nanaimo, BC is still eligible.
+Email me at [[PII:EMAIL]] alex.chen@example.ca or call [[PII:PHONE]] 604-555-0123.
+
+Conflicting comments:
+- [[SENSITIVE:AGENCY_COMMENT]] Heritage review flagged a setback issue.
+- [[CONFIDENTIAL:LEGAL]] Legal asked for clarification on easement scope.
+
+Remaining items:
+- Awaiting attachment upload [[SENSITIVE:ATTACHMENT]] site-plan-v2.pdf
