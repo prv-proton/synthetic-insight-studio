@@ -83,6 +83,7 @@ def _ingest_payload(request: IngestRequest) -> Dict[str, object]:
         raw_items.append(item.text)
         record("pii_redaction", {"theme": theme, "stats": stats})
     insert_enquiries(sanitized, raw_items)
+    _rebuild_patterns()
     record("ingest", {"count": len(sanitized)})
     return {"status": "ok", "ingested": len(sanitized)}
 
@@ -179,18 +180,25 @@ async def _ingest_files(files: List[UploadFile]) -> Dict[str, object]:
 
     if sanitized:
         insert_enquiries(sanitized, raw=None)
+        _rebuild_patterns()
     record("ingest", {"count": len(responses)})
     return {"status": "ok", "ingested": len(responses), "items": responses}
 
 
 @app.post("/patterns/rebuild")
 def rebuild_patterns() -> Dict[str, object]:
+    themes = _rebuild_patterns()
+    return {"status": "ok", "themes": themes}
+
+
+def _rebuild_patterns() -> List[str]:
     enquiries = get_sanitized_texts()
     pattern_map = pattern_lib.extract_patterns(enquiries)
     for theme, pattern in pattern_map.items():
         upsert_patterns(theme, pattern)
-    record("patterns_rebuild", {"themes": list(pattern_map.keys())})
-    return {"status": "ok", "themes": list(pattern_map.keys())}
+    themes = list(pattern_map.keys())
+    record("patterns_rebuild", {"themes": themes})
+    return themes
 
 
 @app.get("/themes", response_model=List[ThemeSummary])
