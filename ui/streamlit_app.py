@@ -201,6 +201,8 @@ with tabs[2]:
     ):
         if theme == "No themes":
             st.warning("Load data and rebuild patterns first.")
+        elif is_below_threshold:
+            st.warning("Select a theme that meets the minimum record threshold.")
         else:
             try:
                 payload = {
