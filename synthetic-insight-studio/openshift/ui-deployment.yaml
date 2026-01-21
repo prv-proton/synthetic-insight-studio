@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-insight-ui
+  labels:
+    app: synthetic-insight-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: synthetic-insight-ui
+  template:
+    metadata:
+      labels:
+        app: synthetic-insight-ui
+    spec:
+      containers:
+        - name: ui
+          image: synthetic-insight-ui:latest
+          ports:
+            - containerPort: 8501
+          env:
+            - name: BACKEND_URL
+              value: http://synthetic-insight-backend:8000
