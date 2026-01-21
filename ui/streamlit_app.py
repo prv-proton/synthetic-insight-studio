@@ -187,18 +187,31 @@ with tabs[2]:
     is_below_threshold = (
         k_threshold is not None and theme != "No themes" and selected_count < k_threshold
     )
+    allow_below_threshold = False
     if is_below_threshold:
         st.warning(
             f"Theme has {selected_count} records; need at least {k_threshold} to generate."
         )
-    if st.button("Generate", disabled=theme == "No themes" or is_below_threshold):
+        allow_below_threshold = st.checkbox(
+            "Allow generation with fewer records (lower quality expected)",
+            value=False,
+        )
+    if st.button(
+        "Generate",
+        disabled=theme == "No themes" or (is_below_threshold and not allow_below_threshold),
+    ):
         if theme == "No themes":
             st.warning("Load data and rebuild patterns first.")
-        elif is_below_threshold:
+        elif is_below_threshold and not allow_below_threshold:
             st.warning("Select a theme that meets the minimum record threshold.")
         else:
             try:
-                payload = {"theme": theme, "kind": kind, "count": count}
+                payload = {
+                    "theme": theme,
+                    "kind": kind,
+                    "count": count,
+                    "allow_below_threshold": allow_below_threshold,
+                }
                 result = call_backend("POST", "/generate", payload)
                 st.success("Generated synthetic outputs.")
                 st.write(result.get("disclaimer"))

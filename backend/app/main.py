@@ -213,7 +213,10 @@ def generate(request: GenerateRequest) -> Dict[str, object]:
     if not pattern_entry:
         raise HTTPException(status_code=404, detail="Theme not found")
     pattern = pattern_entry["pattern"]
-    if pattern.get("count", 0) < settings.k_threshold:
+    if (
+        pattern.get("count", 0) < settings.k_threshold
+        and not request.allow_below_threshold
+    ):
         raise HTTPException(
             status_code=400,
             detail=f"Theme does not meet k-threshold of {settings.k_threshold}",
