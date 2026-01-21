@@ -22,6 +22,17 @@ def call_backend(method: str, path: str, payload: Dict[str, Any] | None = None) 
     return response.json()
 
 
+def call_backend_files(path: str, files: List[st.runtime.uploaded_file_manager.UploadedFile]) -> Dict[str, Any]:
+    url = f"{backend_url}{path}"
+    payload = [
+        ("files", (file.name, file.getvalue(), file.type or "text/plain"))
+        for file in files
+    ]
+    response = requests.post(url, files=payload, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
 def format_backend_error(exc: requests.RequestException) -> str:
     response = getattr(exc, "response", None)
     if response is None:
@@ -89,6 +100,36 @@ with tabs[0]:
             st.success(f"Ingested {result.get('ingested')} synthetic enquiries.")
         except Exception as exc:  # noqa: BLE001
             st.error(f"Upload failed: {exc}")
+
+    st.markdown("---")
+    st.subheader("Upload text or email files")
+    st.caption("Raw file content is not stored or displayed.")
+    upload_files = st.file_uploader(
+        "Upload .txt or .eml files",
+        type=["txt", "eml"],
+        accept_multiple_files=True,
+    )
+    if upload_files and st.button("Ingest text files"):
+        try:
+            result = call_backend_files("/ingest", upload_files)
+            st.success(f"Ingested {result.get('ingested')} text files.")
+            items = result.get("items", [])
+            for index, item in enumerate(items):
+                with st.expander(f"{item.get('filename', 'upload')} details", expanded=True):
+                    st.write(f"Inferred content type: {item.get('inferred_source_type')}")
+                    st.write(f"Risk level: {item.get('risk_level')}")
+                    st.write("Risk explanation:")
+                    st.write(", ".join(item.get("risk_reasons", [])))
+                    st.write(f"Redaction summary: {item.get('redaction_counts', {})}")
+                    if item.get("risk_level") == "HIGH":
+                        st.info("Preview disabled for HIGH risk content.")
+                    else:
+                        toggle_key = f"preview_{index}"
+                        if st.toggle("Preview sanitized snippet", value=False, key=toggle_key):
+                            sanitized_text = item.get("sanitized_text") or ""
+                            st.code(sanitized_text[:300])
+        except requests.RequestException as exc:
+            st.error(f"Upload failed: {format_backend_error(exc)}")
 
 with tabs[1]:
     st.subheader("Pattern overview")

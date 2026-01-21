@@ -55,6 +55,14 @@ Backend (`backend/app/config.py` defaults):
 - A **k-threshold** guardrail prevents theme generation with too few records.
 - Every output is labeled: _“Synthetic / Exploratory — Not real user data.”_
 
+## Supported ingestion formats
+
+- **`.jsonl`** — multiple enquiries with `{ "text": "..." }` per line.
+- **`.eml`** — email messages (treated as email-like text).
+- **`.txt`** — raw text or email-like content (auto-detected and handled conservatively).
+
+The prototype auto-detects structure for `.txt` uploads and always runs PII redaction. Raw file content is never displayed in the UI.
+
 ## OpenShift deployment
 
 Manifests are in `openshift/`. Apply them in your OpenShift cluster:
