@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: synthetic-insight-ui
+  labels:
+    app: synthetic-insight-ui
+spec:
+  selector:
+    app: synthetic-insight-ui
+  ports:
+    - name: http
+      port: 8501
+      targetPort: 8501

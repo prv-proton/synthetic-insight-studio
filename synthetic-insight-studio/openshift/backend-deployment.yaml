@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthetic-insight-backend
+  labels:
+    app: synthetic-insight-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: synthetic-insight-backend
+  template:
+    metadata:
+      labels:
+        app: synthetic-insight-backend
+    spec:
+      containers:
+        - name: backend
+          image: synthetic-insight-backend:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DB_PATH
+              value: /data/app.db
+            - name: STORE_RAW
+              value: "false"
+            - name: K_THRESHOLD
+              value: "10"
+            - name: LLM_PROVIDER
+              value: "ollama"
+            - name: OLLAMA_URL
+              value: http://ollama:11434
+            - name: OLLAMA_MODEL
+              value: qwen2:1.5b
+          volumeMounts:
+            - name: backend-data
+              mountPath: /data
+      volumes:
+        - name: backend-data
+          emptyDir: {}
