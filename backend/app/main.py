@@ -75,6 +75,28 @@ async def ingest(
     return _ingest_payload(payload)
 
 
+@app.post("/sanitize")
+async def sanitize(
+    request: Request,
+    files: List[UploadFile] | None = File(default=None),
+) -> Dict[str, object]:
+    if files:
+        items = await _sanitize_files(files)
+        record(
+            "sanitize",
+            {"count": len(items), "items": [item["audit"] for item in items]},
+        )
+        return {"items": [item["response"] for item in items]}
+    payload = await request.json()
+    text = payload.get("text") if isinstance(payload, dict) else None
+    if not text or not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="Text is required")
+    source_type = payload.get("source_type", "auto")
+    response, audit = _sanitize_text(text, source_type, filename=None)
+    record("sanitize", {"count": 1, "items": [audit]})
+    return response
+
+
 def _ingest_payload(request: IngestRequest) -> Dict[str, object]:
     sanitized: List[Dict[str, str]] = []
     raw_items: List[str] = []
@@ -218,6 +240,74 @@ async def _ingest_files(files: List[UploadFile]) -> Dict[str, object]:
     _rebuild_patterns()
     record("ingest", {"count": len(responses)})
     return {"status": "ok", "ingested": len(responses), "items": responses}
+
+
+async def _sanitize_files(
+    files: List[UploadFile],
+) -> List[Dict[str, Dict[str, object]]]:
+    items: List[Dict[str, Dict[str, object]]] = []
+    for file in files:
+        filename = file.filename or "uploaded"
+        extension = Path(filename).suffix.lower()
+        if extension not in {".txt", ".eml", ".jsonl"}:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {filename}")
+        raw_bytes = await file.read()
+        if len(raw_bytes) > 1_048_576:
+            raise HTTPException(
+                status_code=413, detail=f"{filename} exceeds 1MB size limit"
+            )
+        text = raw_bytes.decode("utf-8", errors="replace")
+        if not text.strip():
+            raise HTTPException(
+                status_code=400, detail=f"{filename} must not be empty"
+            )
+        source_type = "email" if extension == ".eml" else "auto"
+        response, audit = _sanitize_text(text, source_type, filename=filename)
+        items.append({"response": response, "audit": audit})
+    return items
+
+
+def _sanitize_text(
+    text: str,
+    source_type: str,
+    filename: str | None,
+) -> tuple[Dict[str, object], Dict[str, object]]:
+    normalized_text = text
+    normalization_meta: Dict[str, object] | None = None
+    if source_type not in {"auto", "plain", "email"}:
+        raise HTTPException(
+            status_code=400,
+            detail="source_type must be one of: plain, email, auto",
+        )
+    if source_type == "auto":
+        inferred_source_type = infer_source_type(text)
+    elif source_type == "plain":
+        inferred_source_type = "plain_text"
+    else:
+        inferred_source_type = "email"
+    if inferred_source_type in {"email", "email_like"}:
+        normalized = normalize_email(text)
+        normalized_text = normalized.normalized_text
+        normalization_meta = normalized.meta
+    sanitized_text, redaction_stats = redact(normalized_text)
+    response: Dict[str, object] = {
+        "sanitized_text": sanitized_text,
+        "redaction_stats": redaction_stats,
+        "inferred_source_type": inferred_source_type,
+        "normalization_meta": normalization_meta,
+        "notes": [
+            "Sanitize-only mode: no classification, no storage, no pattern extraction."
+        ],
+    }
+    if filename:
+        response["filename"] = filename
+    audit = {
+        "filename": filename,
+        "inferred_source_type": inferred_source_type,
+        "redaction_stats": redaction_stats,
+        "normalized": normalization_meta is not None,
+    }
+    return response, audit
 
 
 @app.post("/patterns/rebuild")

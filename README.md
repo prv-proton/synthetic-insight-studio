@@ -63,6 +63,15 @@ Backend (`backend/app/config.py` defaults):
 
 The prototype auto-detects structure for `.txt` uploads and always runs PII redaction. Raw file content is never displayed in the UI.
 
+## Sanitize-only preview
+
+Use `POST /sanitize` to preview masked content when you only have a few examples. The endpoint accepts either:
+
+- **Multipart uploads** for `.txt`, `.eml`, or `.jsonl` files.
+- **JSON body** like `{ "text": "...", "source_type": "plain|email|auto" }`.
+
+This mode **does not** classify, store, or generate. It returns the same text with sensitive values masked for review, along with redaction stats and normalization details.
+
 ## OpenShift deployment
 
 Manifests are in `openshift/`. Apply them in your OpenShift cluster:

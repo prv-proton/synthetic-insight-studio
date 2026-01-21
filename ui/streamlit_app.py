@@ -84,6 +84,7 @@ st.sidebar.write(get_ollama_status())
 tabs = st.tabs(
     [
         "Load data",
+        "Sanitize (Preview)",
         "Pattern overview",
         "Generate context pack",
         "Export markdown",
@@ -152,6 +153,73 @@ with tabs[0]:
             st.error(f"Upload failed: {format_backend_error(exc)}")
 
 with tabs[1]:
+    st.subheader("Sanitize (Preview)")
+    st.info(
+        "This does not classify or store content. It only masks sensitive data for review."
+    )
+    sanitize_source_type = st.selectbox(
+        "Source type",
+        options=["auto", "plain", "email"],
+        help="Choose how to interpret pasted text for normalization.",
+    )
+    sanitize_text = st.text_area(
+        "Paste text or email content",
+        height=200,
+    )
+    sanitize_files = st.file_uploader(
+        "Upload .txt, .eml, or .jsonl files",
+        type=["txt", "eml", "jsonl"],
+        accept_multiple_files=True,
+    )
+    if st.button("Mask sensitive info"):
+        try:
+            if sanitize_files:
+                result = call_backend_files("/sanitize", sanitize_files)
+            elif sanitize_text.strip():
+                result = call_backend(
+                    "POST",
+                    "/sanitize",
+                    {"text": sanitize_text, "source_type": sanitize_source_type},
+                )
+            else:
+                st.warning("Provide text or upload a file to sanitize.")
+                result = None
+            if result:
+                items = result.get("items")
+                if items:
+                    for item in items:
+                        with st.expander(item.get("filename", "Sanitized file"), expanded=True):
+                            st.write(
+                                f"Inferred source type: {item.get('inferred_source_type')}"
+                            )
+                            st.write("Normalization metadata:")
+                            st.json(item.get("normalization_meta"))
+                            st.write("Redaction stats:")
+                            st.table([item.get("redaction_stats", {})])
+                            st.text_area(
+                                "Sanitized text",
+                                value=item.get("sanitized_text", ""),
+                                height=300,
+                                disabled=True,
+                            )
+                else:
+                    st.write(
+                        f"Inferred source type: {result.get('inferred_source_type')}"
+                    )
+                    st.write("Normalization metadata:")
+                    st.json(result.get("normalization_meta"))
+                    st.write("Redaction stats:")
+                    st.table([result.get("redaction_stats", {})])
+                    st.text_area(
+                        "Sanitized text",
+                        value=result.get("sanitized_text", ""),
+                        height=300,
+                        disabled=True,
+                    )
+        except requests.RequestException as exc:
+            st.error(f"Sanitize failed: {format_backend_error(exc)}")
+
+with tabs[2]:
     st.subheader("Pattern overview")
     st.caption("Themes are shown from aggregate counts; no raw text is displayed.")
     st.info(
@@ -207,7 +275,7 @@ with tabs[1]:
     else:
         st.info("No themes available yet. Load data to see counts.")
 
-with tabs[2]:
+with tabs[3]:
     st.subheader("Generate synthetic context pack")
     st.caption("Outputs are synthetic and privacy-safe.")
     try:
@@ -285,7 +353,7 @@ with tabs[2]:
             except requests.RequestException as exc:
                 st.error(f"Generation failed: {format_backend_error(exc)}")
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("Export markdown")
     try:
         generated = call_backend("GET", "/generated").get("items", [])
@@ -308,7 +376,7 @@ with tabs[3]:
     else:
         st.info("No generated items available yet.")
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("Audit log")
     try:
         audit = call_backend("GET", "/audit/recent").get("items", [])
