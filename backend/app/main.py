@@ -163,79 +163,17 @@ async def _ingest_files(files: List[UploadFile]) -> Dict[str, object]:
                 detail=f"{filename} must contain at least 10 characters",
             )
 
-        source_file_type = extension.lstrip(".")
-        inferred_source_type = (
-            "email_like" if extension == ".eml" else infer_source_type(text)
-        )
-        normalization_applied = False
-        normalization_meta: Dict[str, object] | None = None
-        working_text = text
-
-        if inferred_source_type == "email_like":
-            normalized = normalize_email(text)
-            working_text = normalized.normalized_text
-            normalization_meta = normalized.meta
-            normalization_applied = True
-
-        redacted, redaction_stats = redact(working_text)
-        post_redaction_findings = detect_pii(redacted)
-        quoted_thread = detect_quoted_thread(working_text)
-        attachment_hints = detect_attachment_hints(working_text)
-        risk_level, risk_reasons = assess_risk(
-            redaction_stats,
-            post_redaction_findings,
-            inferred_source_type == "email_like",
-            quoted_thread,
-            attachment_hints,
-        )
-        storage_decision = (
-            "sanitized_text_stored"
-            if should_store_sanitized(risk_level)
-            else "aggregates_only"
-        )
-
-        theme = pattern_lib.classify(redacted)
-        if should_store_sanitized(risk_level):
-            sanitized.append({"text_sanitized": redacted, "theme": theme})
-
-        theme_counts.append(
-            {
-                "theme": theme,
-                "count_low": 1 if risk_level == "LOW" else 0,
-                "count_medium": 1 if risk_level == "MEDIUM" else 0,
-                "count_high": 1 if risk_level == "HIGH" else 0,
-            }
-        )
-
-        record(
-            "ingest_txt",
-            {
-                "filename": filename,
-                "source_file_type": source_file_type,
-                "inferred_source_type": inferred_source_type,
-                "normalization_applied": normalization_applied,
-                "normalization_meta": normalization_meta,
-                "redaction_counts": redaction_stats,
-                "post_redaction_findings": len(post_redaction_findings),
-                "risk_level": risk_level,
-                "risk_reasons": risk_reasons,
-                "storage_decision": storage_decision,
-            },
-        )
-
-        responses.append(
-            {
-                "filename": filename,
-                "source_file_type": source_file_type,
-                "inferred_source_type": inferred_source_type,
-                "normalization_applied": normalization_applied,
-                "redaction_counts": redaction_stats,
-                "risk_level": risk_level,
-                "risk_reasons": risk_reasons,
-                "storage_decision": storage_decision,
-                "sanitized_text": redacted if risk_level != "HIGH" else None,
-            }
-        )
+        # Split threaded content by separator
+        text_segments = [segment.strip() for segment in text.split('---') if segment.strip()]
+        if len(text_segments) > 1:
+            # Process each segment as separate enquiry
+            for segment in text_segments:
+                if len(segment) < 10:
+                    continue
+                _process_text_segment(segment, filename, extension, sanitized, theme_counts, responses)
+        else:
+            # Process as single text
+            _process_text_segment(text, filename, extension, sanitized, theme_counts, responses)
 
     upsert_theme_counts(theme_counts)
     if sanitized:
@@ -243,6 +181,89 @@ async def _ingest_files(files: List[UploadFile]) -> Dict[str, object]:
     _rebuild_patterns()
     record("ingest", {"count": len(responses)})
     return {"status": "ok", "ingested": len(responses), "items": responses}
+
+
+def _process_text_segment(
+    text: str,
+    filename: str,
+    extension: str,
+    sanitized: List[Dict[str, str]],
+    theme_counts: List[Dict[str, int]],
+    responses: List[Dict[str, object]],
+) -> None:
+    source_file_type = extension.lstrip(".")
+    inferred_source_type = (
+        "email_like" if extension == ".eml" else infer_source_type(text)
+    )
+    normalization_applied = False
+    normalization_meta: Dict[str, object] | None = None
+    working_text = text
+
+    if inferred_source_type == "email_like":
+        normalized = normalize_email(text)
+        working_text = normalized.normalized_text
+        normalization_meta = normalized.meta
+        normalization_applied = True
+
+    redacted, redaction_stats = redact(working_text)
+    post_redaction_findings = detect_pii(redacted)
+    quoted_thread = detect_quoted_thread(working_text)
+    attachment_hints = detect_attachment_hints(working_text)
+    risk_level, risk_reasons = assess_risk(
+        redaction_stats,
+        post_redaction_findings,
+        inferred_source_type == "email_like",
+        quoted_thread,
+        attachment_hints,
+    )
+    storage_decision = (
+        "sanitized_text_stored"
+        if should_store_sanitized(risk_level)
+        else "aggregates_only"
+    )
+
+    theme = pattern_lib.classify(redacted)
+    if should_store_sanitized(risk_level):
+        sanitized.append({"text_sanitized": redacted, "theme": theme})
+
+    theme_counts.append(
+        {
+            "theme": theme,
+            "count_low": 1 if risk_level == "LOW" else 0,
+            "count_medium": 1 if risk_level == "MEDIUM" else 0,
+            "count_high": 1 if risk_level == "HIGH" else 0,
+        }
+    )
+
+    record(
+        "ingest_txt",
+        {
+            "filename": filename,
+            "source_file_type": source_file_type,
+            "inferred_source_type": inferred_source_type,
+            "normalization_applied": normalization_applied,
+            "normalization_meta": normalization_meta,
+            "redaction_counts": redaction_stats,
+            "post_redaction_findings": len(post_redaction_findings),
+            "risk_level": risk_level,
+            "risk_reasons": risk_reasons,
+            "storage_decision": storage_decision,
+        },
+    )
+
+    responses.append(
+        {
+            "filename": filename,
+            "source_file_type": source_file_type,
+            "inferred_source_type": inferred_source_type,
+            "normalization_applied": normalization_applied,
+            "redaction_counts": redaction_stats,
+            "risk_level": risk_level,
+            "risk_reasons": risk_reasons,
+            "storage_decision": storage_decision,
+            "sanitized_text": redacted,
+        }
+    )
 
 
 async def _sanitize_files(

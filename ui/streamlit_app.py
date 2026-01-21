@@ -147,13 +147,10 @@ with tabs[0]:
                     st.write("Risk explanation:")
                     st.write(", ".join(item.get("risk_reasons", [])))
                     st.write(f"Redaction summary: {item.get('redaction_counts', {})}")
-                    if item.get("risk_level") == "HIGH":
-                        st.info("Preview disabled for HIGH risk content.")
-                    else:
-                        toggle_key = f"preview_{index}"
-                        if st.toggle("Preview sanitized snippet", value=False, key=toggle_key):
-                            sanitized_text = item.get("sanitized_text") or ""
-                            st.code(sanitized_text[:300])
+                    toggle_key = f"preview_{index}"
+                    if st.toggle("Preview sanitized snippet", value=False, key=toggle_key):
+                        sanitized_text = item.get("sanitized_text") or ""
+                        st.code(sanitized_text[:300])
         except requests.RequestException as exc:
             st.error(f"Upload failed: {format_backend_error(exc)}")
 
@@ -350,9 +347,6 @@ with tabs[3]:
         st.warning(
             "This theme is mostly high-risk. Generation will be generic and labeled lower confidence."
         )
-    allow_below_threshold = True
-    if is_below_threshold:
-        st.info(f"{selected_count} record(s) available for this theme.")
     if st.button(
         "Generate",
         disabled=theme == "No themes",
@@ -365,7 +359,7 @@ with tabs[3]:
                     "theme": theme,
                     "kind": kind,
                     "count": count,
-                    "allow_below_threshold": allow_below_threshold,
+                    "allow_below_threshold": True,
                 }
                 result = call_backend("POST", "/generate", payload)
                 st.success("Generated synthetic outputs.")
