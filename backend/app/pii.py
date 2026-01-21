@@ -11,7 +11,10 @@ PATTERNS = {
     "ADDRESS": re.compile(
         r"\b\d{1,5}\s+(?:[A-Za-z0-9]+\s){0,4}"
         r"(street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|"
-        r"way|wy|circle|cir)\b",
+        r"way|wy|circle|cir)\b"
+        r"(?:,\s*[A-Za-z.\s]+)?"
+        r"(?:,\s*[A-Za-z.\s]+)?"
+        r"(?:\s+\d{5}(?:-\d{4})?)?",
         re.IGNORECASE,
     ),
     "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
