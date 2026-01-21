@@ -14,6 +14,7 @@ from .generator import (
     generate_personas,
     generate_pseudo_enquiries,
     generate_scenarios,
+    generate_pseudo_thread_first_email,
     wrap_output,
 )
 from .ingestion import infer_source_type, trim_excess_whitespace
@@ -105,62 +106,97 @@ async def analyze_thread(
     request: Request,
     files: List[UploadFile] | None = File(default=None),
 ) -> Dict[str, object]:
-    if files:
-        if len(files) != 1:
-            raise HTTPException(status_code=400, detail="Upload exactly one thread file")
-        file = files[0]
-        filename = file.filename or "uploaded"
-        extension = Path(filename).suffix.lower()
-        if extension not in {".txt", ".eml"}:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {filename}")
-        raw_bytes = await file.read()
-        text = raw_bytes.decode("utf-8", errors="replace")
-        source_type = "email" if extension == ".eml" else "auto"
-    else:
-        payload = await request.json()
-        text = payload.get("text") if isinstance(payload, dict) else None
-        if not text or not isinstance(text, str):
-            raise HTTPException(status_code=400, detail="Text is required")
-        source_type = payload.get("source_type", "auto")
-
-    normalized = _normalize_thread_input(text, source_type)
-    cleaned_full = normalized["cleaned_full"]
-    latest_message = normalized["latest_message"]
-    meta = normalized["meta"]
-
-    redacted_full, full_stats = redact_uniform(cleaned_full)
-    redacted_latest, latest_stats = redact_uniform(latest_message)
-    turns = split_thread_into_turns(cleaned_full)
-    redacted_turns = _redact_turns(turns)
-
-    heuristic = _build_heuristic_analysis(
-        redacted_latest,
-        redacted_full,
-        meta,
-        redacted_turns,
+    text, source_type = await _get_thread_payload(request, files)
+    analysis, redacted_latest, meta, stats, turns_count = _analyze_thread_text(
+        text,
+        source_type,
     )
-    analysis = _refine_with_ollama(heuristic, redacted_latest, redacted_turns)
-    analysis = _sanitize_analysis_output(analysis)
 
     record(
         "thread_analyze",
         {
             "source_type": source_type,
             "meta": meta,
-            "turns_count": len(redacted_turns),
-            "redaction_stats": {
-                "latest": latest_stats,
-                "full": full_stats,
-            },
+            "turns_count": turns_count,
+            "redaction_stats": stats,
         },
     )
 
     return {
-        "latest_message_redacted": redacted_latest[:400],
+        "latest_message_redacted": redacted_latest,
         "analysis": analysis,
         "meta": meta,
-        "turns_count": len(redacted_turns),
+        "turns_count": turns_count,
     }
+
+
+@app.get("/evidence/library")
+def evidence_library(topic: str = "permit_housing", limit: int = 5) -> Dict[str, object]:
+    snippets = _load_evidence_library(topic, limit)
+    return {"topic": topic, "items": snippets}
+
+
+@app.post("/generate/pseudo_email")
+async def generate_pseudo_email(request: Request) -> Dict[str, object]:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    source = payload.get("source")
+    thread_text = payload.get("thread_text")
+    theme = payload.get("theme")
+    evidence_source = payload.get("evidence_source", "none")
+    n_snippets = int(payload.get("n_snippets", 5))
+    style = payload.get("style", "permit_housing")
+
+    analysis = None
+    context: Dict[str, object] = {}
+    if source == "thread_analyze":
+        if not isinstance(thread_text, str) or not thread_text.strip():
+            raise HTTPException(status_code=400, detail="thread_text is required")
+        analysis, _, _, _, _ = _analyze_thread_text(thread_text, "auto")
+        context = analysis
+    elif source == "patterns":
+        if not theme:
+            raise HTTPException(status_code=400, detail="theme is required")
+        pattern_entry = get_pattern(theme)
+        if not pattern_entry:
+            raise HTTPException(status_code=404, detail="Theme not found")
+        pattern = pattern_entry["pattern"]
+        context = _context_from_pattern(theme, pattern)
+    else:
+        raise HTTPException(status_code=400, detail="source must be thread_analyze or patterns")
+
+    pseudo_emails = generate_pseudo_thread_first_email(context, style=style, n=1)
+    pseudo_email = pseudo_emails[0] if pseudo_emails else {}
+
+    topic = payload.get("topic", "permit_housing")
+    evidence_snippets, evidence_method = _resolve_evidence_snippets(
+        evidence_source,
+        thread_text,
+        n_snippets,
+        topic,
+    )
+    inspired_by = _build_inspired_by(context)
+
+    record(
+        "generate_pseudo_email",
+        {
+            "source": source,
+            "theme": theme,
+            "evidence_method": evidence_method,
+            "snippets_count": len(evidence_snippets),
+        },
+    )
+
+    response: Dict[str, object] = {
+        "pseudo_email": pseudo_email,
+        "evidence_snippets": evidence_snippets,
+        "evidence_method": evidence_method,
+        "inspired_by": inspired_by,
+    }
+    if analysis:
+        response["analysis"] = analysis
+    return response
 
 
 def _ingest_payload(request: IngestRequest) -> Dict[str, object]:
@@ -370,12 +406,152 @@ def _sanitize_text(
     return response, audit
 
 
+async def _get_thread_payload(
+    request: Request,
+    files: List[UploadFile] | None,
+) -> tuple[str, str]:
+    if files:
+        if len(files) != 1:
+            raise HTTPException(status_code=400, detail="Upload exactly one thread file")
+        file = files[0]
+        filename = file.filename or "uploaded"
+        extension = Path(filename).suffix.lower()
+        if extension not in {".txt", ".eml"}:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {filename}")
+        raw_bytes = await file.read()
+        text = raw_bytes.decode("utf-8", errors="replace")
+        source_type = "email" if extension == ".eml" else "auto"
+        return text, source_type
+    payload = await request.json()
+    text = payload.get("text") if isinstance(payload, dict) else None
+    if not text or not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="Text is required")
+    source_type = payload.get("source_type", "auto")
+    return text, source_type
+
+
+def _analyze_thread_text(
+    text: str,
+    source_type: str,
+) -> tuple[Dict[str, object], str, Dict[str, object], Dict[str, object], int]:
+    normalized = _normalize_thread_input(text, source_type)
+    cleaned_full = normalized["cleaned_full"]
+    latest_message = normalized["latest_message"]
+    meta = normalized["meta"]
+
+    redacted_full, full_stats = redact_uniform(cleaned_full)
+    redacted_latest, latest_stats = redact_uniform(latest_message)
+    turns = split_thread_into_turns(cleaned_full)
+    redacted_turns = _redact_turns(turns)
+
+    heuristic = _build_heuristic_analysis(
+        redacted_latest,
+        redacted_full,
+        meta,
+        redacted_turns,
+    )
+    analysis = _refine_with_ollama(heuristic, redacted_latest, redacted_turns)
+    analysis = _sanitize_analysis_output(analysis)
+    stats = {"latest": latest_stats, "full": full_stats}
+    return analysis, redacted_latest[:400], meta, stats, len(redacted_turns)
+
+
 def _infer_sanitize_source_type(text: str, source_type: str) -> str:
     if source_type == "auto":
         return "email_like" if infer_email_like(text) else "plain_text"
     if source_type == "plain":
         return "plain_text"
     return "email"
+
+
+def _data_path(filename: str) -> Path:
+    return Path(__file__).resolve().parents[2] / "data" / filename
+
+
+def _load_evidence_library(topic: str, limit: int) -> List[Dict[str, object]]:
+    path = _data_path("approved_anonymized_snippets.jsonl")
+    if not path.exists():
+        return []
+    items: List[Dict[str, object]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            entry_topic = entry.get("topic")
+            entry_topics = entry.get("topics") or []
+            if entry_topic != topic and topic not in entry_topics:
+                continue
+            items.append(
+                {
+                    "text": entry.get("text", ""),
+                    "tags": entry.get("tags", []),
+                    "stage": entry.get("stage"),
+                }
+            )
+            if len(items) >= limit:
+                break
+    return items
+
+
+def _resolve_evidence_snippets(
+    evidence_source: str,
+    thread_text: str | None,
+    n_snippets: int,
+    topic: str,
+) -> tuple[List[str], str]:
+    if evidence_source == "library":
+        items = _load_evidence_library(topic, n_snippets)
+        return [item["text"] for item in items], "library"
+    if evidence_source == "uploaded" and thread_text:
+        response, _ = _sanitize_text(thread_text, "auto", "mask_and_extract_evidence", None)
+        snippets = response.get("evidence_snippets", [])[:n_snippets]
+        return snippets, "uploaded_sanitize" if snippets else "patterns_only"
+    return [], "patterns_only"
+
+
+def _build_inspired_by(context: Dict[str, object]) -> str:
+    summary = context.get("thread_summary", {}) if isinstance(context, dict) else {}
+    blockers = summary.get("blockers", []) or []
+    constraints = summary.get("constraints", []) or []
+    signals = ", ".join(blockers[:2] + constraints[:2])
+    return f"Inspired by common patterns: {signals or 'standard permitting guidance.'}"
+
+
+def _context_from_pattern(theme: str, pattern: Dict[str, object]) -> Dict[str, object]:
+    top_terms = pattern.get("top_terms", []) or []
+    phrases = pattern.get("common_phrases", []) or []
+    summary = {
+        "one_sentence": f"{theme} enquiry about requirements",
+        "stage": "in_review",
+        "goals": top_terms[:3] or ["Clarify requirements."],
+        "constraints": phrases[:2] or ["Timeline pressure."],
+        "blockers": phrases[2:4] or [],
+        "decision_points": ["Confirm requirements", "Agree on next steps"],
+        "attachments_mentioned": ["[ATTACHMENT]"],
+        "agencies_or_roles": ["Planning"],
+        "timeline_signals": ["[DATE]"],
+    }
+    return {
+        "thread_summary": summary,
+        "persona": {
+            "persona_name": "Focused applicant",
+            "from_role": "unknown",
+            "experience_level": "medium",
+            "primary_motivation": "Move the permit forward",
+            "frustrations": [],
+            "needs": summary["goals"],
+            "tone": "neutral",
+        },
+        "next_questions": {
+            "to_clarify": ["What steps remain?"],
+            "to_unblock": ["Is any document missing?"],
+            "risks_if_ignored": ["Timeline may slip."],
+        },
+    }
 
 
 def _normalize_thread_input(text: str, source_type: str) -> Dict[str, object]:
@@ -469,7 +645,7 @@ def _build_heuristic_analysis(
     timeline_signals = _extract_timeline_signals(full_text)
     stage = _infer_stage(full_text)
 
-    role = _infer_role(full_text)
+    from_role = _infer_role(full_text)
     experience_level = _infer_experience(full_text)
     tone = _infer_tone(base_text)
     primary_motivation = (
@@ -494,8 +670,8 @@ def _build_heuristic_analysis(
             "timeline_signals": timeline_signals,
         },
         "persona": {
-            "persona_name": _build_persona_name(role, tone),
-            "role": role,
+            "persona_name": _build_persona_name(from_role, tone),
+            "from_role": from_role,
             "experience_level": experience_level,
             "primary_motivation": primary_motivation,
             "frustrations": frustrations,
@@ -785,7 +961,7 @@ def _build_thread_prompt(
         "  },\n"
         '  "persona": {\n'
         '    "persona_name": str,\n'
-        '    "role": "homeowner|developer|consultant|unknown",\n'
+        '    "from_role": "homeowner|developer|consultant|unknown",\n'
         '    "experience_level": "low|medium|high",\n'
         '    "primary_motivation": str,\n'
         '    "frustrations": [str],\n'
@@ -843,7 +1019,10 @@ def _coerce_analysis_schema(data: Dict[str, object]) -> Dict[str, object]:
         "expedite",
         "unknown",
     })
-    role = _coerce_enum(persona.get("role"), {"homeowner", "developer", "consultant", "unknown"})
+    role = _coerce_enum(
+        persona.get("from_role") or persona.get("role"),
+        {"homeowner", "developer", "consultant", "unknown"},
+    )
     experience = _coerce_enum(persona.get("experience_level"), {"low", "medium", "high"})
     tone = _coerce_enum(persona.get("tone"), {"anxious", "frustrated", "neutral", "urgent", "unknown"})
 
@@ -861,7 +1040,7 @@ def _coerce_analysis_schema(data: Dict[str, object]) -> Dict[str, object]:
         },
         "persona": {
             "persona_name": _coerce_text(persona.get("persona_name")),
-            "role": role,
+            "from_role": role,
             "experience_level": experience,
             "primary_motivation": _coerce_text(persona.get("primary_motivation")),
             "frustrations": _coerce_list(persona.get("frustrations")),

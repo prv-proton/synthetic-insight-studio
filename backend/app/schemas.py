@@ -33,7 +33,7 @@ class ThreadSummary(BaseModel):
 
 class Persona(BaseModel):
     persona_name: str
-    role: str
+    from_role: str
     experience_level: str
     primary_motivation: str
     frustrations: List[str]

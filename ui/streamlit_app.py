@@ -97,6 +97,7 @@ tabs = st.tabs(
         "Load data",
         "Sanitize (Preview)",
         "Single Thread Analyzer",
+        "Generate realistic pseudo enquiry",
         "Pattern overview",
         "Generate context pack",
         "Export markdown",
@@ -259,10 +260,12 @@ with tabs[2]:
     analyzer_text = st.text_area(
         "Paste a single email thread",
         height=200,
+        key="analyzer_text",
     )
     analyzer_file = st.file_uploader(
         "Upload a single .txt or .eml thread",
         type=["txt", "eml"],
+        key="analyzer_file",
     )
     col1, col2 = st.columns(2)
     with col1:
@@ -320,7 +323,7 @@ with tabs[2]:
                     persona = analysis.get("persona", {})
                     st.write(
                         f"**{persona.get('persona_name', 'Persona')}** — "
-                        f"{persona.get('role', 'unknown')} / "
+                        f"{persona.get('from_role', 'unknown')} / "
                         f"{persona.get('experience_level', 'unknown')}"
                     )
                     st.write(f"Motivation: {persona.get('primary_motivation', '')}")
@@ -337,6 +340,157 @@ with tabs[2]:
                 st.error(f"Analyze failed: {format_backend_error(exc)}")
 
 with tabs[3]:
+    st.subheader("Generate realistic pseudo enquiry")
+    st.info("Synthetic / Exploratory — Not real user data")
+    st.caption("Evidence snippets are anonymized inspiration (not verbatim).")
+    mode = st.radio(
+        "Mode",
+        options=["From a single thread", "From themes/patterns"],
+        horizontal=True,
+    )
+    if mode == "From a single thread":
+        pseudo_source_type = st.selectbox(
+            "Thread source type",
+            options=["auto", "plain", "email"],
+        )
+        pseudo_text = st.text_area(
+            "Paste a single email thread",
+            height=200,
+            key="pseudo_text",
+        )
+        pseudo_file = st.file_uploader(
+            "Upload a single .txt or .eml thread",
+            type=["txt", "eml"],
+            key="pseudo_file",
+        )
+        evidence_source = st.selectbox(
+            "Evidence snippet source",
+            options=["library", "uploaded", "none"],
+            help="Uploaded uses sanitized snippets from this thread.",
+        )
+        if st.button("Generate pseudo enquiry"):
+            try:
+                thread_text = None
+                if pseudo_file:
+                    thread_text = pseudo_file.getvalue().decode("utf-8", errors="replace")
+                elif pseudo_text.strip():
+                    thread_text = pseudo_text
+                if not thread_text:
+                    st.warning("Provide a thread to generate from.")
+                else:
+                    sanitize_result = call_backend(
+                        "POST",
+                        "/sanitize",
+                        {
+                            "text": thread_text,
+                            "source_type": pseudo_source_type,
+                            "mode": "mask_only",
+                        },
+                    )
+                    st.write("Sanitized preview:")
+                    st.code((sanitize_result.get("sanitized_text", "") or "")[:400])
+                    result = call_backend(
+                        "POST",
+                        "/generate/pseudo_email",
+                        {
+                            "source": "thread_analyze",
+                            "thread_text": thread_text,
+                            "evidence_source": evidence_source,
+                            "n_snippets": 5,
+                        },
+                        timeout=30,
+                    )
+                    pseudo_email = result.get("pseudo_email", {})
+                    st.markdown("### Pseudo enquiry")
+                    st.write(f"**Subject:** {pseudo_email.get('subject', '')}")
+                    st.write(f"**From role:** {pseudo_email.get('from_role', '')}")
+                    st.write(f"**Tone:** {pseudo_email.get('tone', '')}")
+                    st.text_area(
+                        "Email body",
+                        value=pseudo_email.get("body", ""),
+                        height=260,
+                        disabled=True,
+                    )
+                    st.write(
+                        f"Attachments mentioned: {pseudo_email.get('attachments_mentioned', [])}"
+                    )
+                    st.write(
+                        f"Placeholders used: {pseudo_email.get('placeholders_used', [])}"
+                    )
+                    analysis = result.get("analysis", {})
+                    if analysis:
+                        st.markdown("### Persona")
+                        persona = analysis.get("persona", {})
+                        st.write(
+                            f"**{persona.get('persona_name', 'Persona')}** — "
+                            f"{persona.get('from_role', 'unknown')} / "
+                            f"{persona.get('experience_level', 'unknown')}"
+                        )
+                        st.write(f"Motivation: {persona.get('primary_motivation', '')}")
+                        st.write(f"Tone: {persona.get('tone', '')}")
+                        st.markdown("### Next Questions")
+                        next_questions = analysis.get("next_questions", {})
+                        st.write("To clarify:")
+                        st.write(next_questions.get("to_clarify", []))
+                        st.write("To unblock:")
+                        st.write(next_questions.get("to_unblock", []))
+                        st.write("Risks if ignored:")
+                        st.write(next_questions.get("risks_if_ignored", []))
+                    st.markdown("### Evidence grounding")
+                    st.write(result.get("inspired_by", ""))
+                    st.caption(
+                        f"Evidence method: {result.get('evidence_method', 'patterns_only')}"
+                    )
+                    st.write(result.get("evidence_snippets", []))
+            except requests.RequestException as exc:
+                st.error(f"Generate failed: {format_backend_error(exc)}")
+    else:
+        try:
+            theme_items = call_backend("GET", "/themes")
+        except requests.RequestException as exc:
+            theme_items = []
+            st.error(f"Failed to load themes: {format_backend_error(exc)}")
+        theme_options = [
+            item.get("theme") for item in theme_items if isinstance(item, dict)
+        ]
+        theme_choice = st.selectbox(
+            "Theme",
+            options=theme_options if theme_options else ["No themes"],
+        )
+        if st.button("Generate pseudo enquiry from theme", disabled=theme_choice == "No themes"):
+            try:
+                result = call_backend(
+                    "POST",
+                    "/generate/pseudo_email",
+                    {
+                        "source": "patterns",
+                        "theme": theme_choice,
+                        "evidence_source": "library",
+                        "n_snippets": 5,
+                    },
+                    timeout=30,
+                )
+                pseudo_email = result.get("pseudo_email", {})
+                st.markdown("### Pseudo enquiry")
+                st.write(f"**Subject:** {pseudo_email.get('subject', '')}")
+                st.write(f"**From role:** {pseudo_email.get('from_role', '')}")
+                st.write(f"**Tone:** {pseudo_email.get('tone', '')}")
+                st.text_area(
+                    "Email body",
+                    value=pseudo_email.get("body", ""),
+                    height=260,
+                    disabled=True,
+                )
+                st.markdown("### Evidence grounding")
+                st.write(result.get("inspired_by", ""))
+                st.caption(
+                    f"Evidence method: {result.get('evidence_method', 'patterns_only')}"
+                )
+                st.write(result.get("evidence_snippets", []))
+            except requests.RequestException as exc:
+                st.error(f"Generate failed: {format_backend_error(exc)}")
+
+with tabs[4]:
     st.subheader("Pattern overview")
     st.caption("Themes are shown from aggregate counts; no raw text is displayed.")
     if st.button("Rebuild patterns"):
@@ -365,7 +519,7 @@ with tabs[3]:
     else:
         st.info("No themes available yet. Load data to see counts.")
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("Generate synthetic context pack")
     st.caption("Outputs are synthetic and privacy-safe.")
     try:
@@ -477,7 +631,7 @@ with tabs[4]:
             except requests.RequestException as exc:
                 st.error(f"Snippet extraction failed: {format_backend_error(exc)}")
 
-with tabs[5]:
+with tabs[6]:
     st.subheader("Export markdown")
     try:
         generated = call_backend("GET", "/generated").get("items", [])
@@ -500,7 +654,7 @@ with tabs[5]:
     else:
         st.info("No generated items available yet.")
 
-with tabs[6]:
+with tabs[7]:
     st.subheader("Audit log")
     try:
         audit = call_backend("GET", "/audit/recent").get("items", [])
