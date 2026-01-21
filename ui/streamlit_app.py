@@ -319,6 +319,7 @@ with tabs[3]:
             "This theme is mostly high-risk. Generation will be generic and labeled lower confidence."
         )
     allow_below_threshold = True
+    enforce_threshold = False
     if is_below_threshold:
         st.info(f"{selected_count} record(s) available for this theme.")
         enforce_threshold = st.checkbox(
@@ -332,7 +333,7 @@ with tabs[3]:
     ):
         if theme == "No themes":
             st.warning("Load data and rebuild patterns first.")
-        elif is_below_threshold:
+        elif is_below_threshold and enforce_threshold:
             st.warning("Select a theme that meets the minimum record threshold.")
         else:
             try:
