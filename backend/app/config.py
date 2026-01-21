@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     db_path: str = "/data/app.db"
-    store_raw: bool = False
+    store_raw: bool = True
     k_threshold: int = 10
     high_dominant_ratio: float = 0.5
     llm_provider: str = "ollama"
