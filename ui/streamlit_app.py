@@ -157,7 +157,7 @@ with tabs[1]:
 
 with tabs[2]:
     st.subheader("Generate synthetic context pack")
-    st.caption("Outputs are synthetic and privacy-safe, with k-threshold enforcement.")
+    st.caption("Outputs are synthetic and privacy-safe.")
     try:
         themes = call_backend("GET", "/themes")
     except requests.RequestException as exc:
@@ -189,9 +189,7 @@ with tabs[2]:
     )
     allow_below_threshold = True
     if is_below_threshold:
-        st.warning(
-            f"Theme has {selected_count} records; need at least {k_threshold} to generate."
-        )
+        st.info(f"{selected_count} record(s) available for this theme.")
         enforce_threshold = st.checkbox(
             "Enforce minimum record threshold",
             value=False,
