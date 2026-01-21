@@ -16,16 +16,41 @@ class ThemeSummary(BaseModel):
     theme: str
     count: int
     count_total: int
-    count_low: int
-    count_medium: int
-    count_high: int
     meets_k: bool
-    high_ratio: float
-    high_dominant: bool
-    text_available_count: int
-    patterns_available: bool
-    insight_quality: str
-    message: Optional[str] = None
+
+
+class ThreadSummary(BaseModel):
+    one_sentence: str
+    stage: str
+    goals: List[str]
+    constraints: List[str]
+    blockers: List[str]
+    decision_points: List[str]
+    attachments_mentioned: List[str]
+    agencies_or_roles: List[str]
+    timeline_signals: List[str]
+
+
+class Persona(BaseModel):
+    persona_name: str
+    role: str
+    experience_level: str
+    primary_motivation: str
+    frustrations: List[str]
+    needs: List[str]
+    tone: str
+
+
+class NextQuestions(BaseModel):
+    to_clarify: List[str]
+    to_unblock: List[str]
+    risks_if_ignored: List[str]
+
+
+class ThreadAnalysis(BaseModel):
+    thread_summary: ThreadSummary
+    persona: Persona
+    next_questions: NextQuestions
 
 
 class PatternResponse(BaseModel):

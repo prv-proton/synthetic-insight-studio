@@ -90,6 +90,7 @@ tabs = st.tabs(
     [
         "Load data",
         "Sanitize (Preview)",
+        "Single Thread Analyzer",
         "Pattern overview",
         "Generate context pack",
         "Export markdown",
@@ -143,9 +144,6 @@ with tabs[0]:
             for index, item in enumerate(items):
                 with st.expander(f"{item.get('filename', 'upload')} details", expanded=True):
                     st.write(f"Inferred content type: {item.get('inferred_source_type')}")
-                    st.write(f"Risk level: {item.get('risk_level')}")
-                    st.write("Risk explanation:")
-                    st.write(", ".join(item.get("risk_reasons", [])))
                     st.write(f"Redaction summary: {item.get('redaction_counts', {})}")
                     toggle_key = f"preview_{index}"
                     if st.toggle("Preview sanitized snippet", value=False, key=toggle_key):
@@ -203,10 +201,8 @@ with tabs[1]:
                             )
                             st.write("Normalization metadata:")
                             st.json(item.get("normalization_meta"))
-                            st.write("Tag redaction stats:")
-                            st.table([item.get("tag_redaction_stats", {})])
-                            st.write("PII redaction stats:")
-                            st.table([item.get("pii_redaction_stats", {})])
+                            st.write("Redaction stats:")
+                            st.table([item.get("redaction_stats", {})])
                             st.text_area(
                                 "Sanitized text",
                                 value=item.get("sanitized_text", ""),
@@ -227,10 +223,8 @@ with tabs[1]:
                     )
                     st.write("Normalization metadata:")
                     st.json(result.get("normalization_meta"))
-                    st.write("Tag redaction stats:")
-                    st.table([result.get("tag_redaction_stats", {})])
-                    st.write("PII redaction stats:")
-                    st.table([result.get("pii_redaction_stats", {})])
+                    st.write("Redaction stats:")
+                    st.table([result.get("redaction_stats", {})])
                     st.text_area(
                         "Sanitized text",
                         value=result.get("sanitized_text", ""),
@@ -249,12 +243,95 @@ with tabs[1]:
             st.error(f"Sanitize failed: {format_backend_error(exc)}")
 
 with tabs[2]:
+    st.subheader("Single Thread Analyzer")
+    st.info("All outputs are synthetic/derived and redacted. Raw thread is not stored.")
+    analyzer_source_type = st.selectbox(
+        "Source type",
+        options=["auto", "plain", "email"],
+        help="Use email for .eml uploads or email-style pasted text.",
+    )
+    analyzer_text = st.text_area(
+        "Paste a single email thread",
+        height=200,
+    )
+    analyzer_file = st.file_uploader(
+        "Upload a single .txt or .eml thread",
+        type=["txt", "eml"],
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Mask Only"):
+            try:
+                if analyzer_file:
+                    result = call_backend_files("/sanitize", [analyzer_file])
+                    item = result.get("items", [{}])[0]
+                elif analyzer_text.strip():
+                    result = call_backend(
+                        "POST",
+                        "/sanitize",
+                        {
+                            "text": analyzer_text,
+                            "source_type": analyzer_source_type,
+                            "mode": "mask_only",
+                        },
+                    )
+                    item = result
+                else:
+                    st.warning("Provide a thread to mask.")
+                    item = None
+                if item:
+                    st.write("Redacted preview:")
+                    st.code((item.get("sanitized_text", "") or "")[:400])
+                    st.write("Redaction stats:")
+                    st.table([item.get("redaction_stats", {})])
+            except requests.RequestException as exc:
+                st.error(f"Mask failed: {format_backend_error(exc)}")
+    with col2:
+        if st.button("Analyze Thread"):
+            try:
+                if analyzer_file:
+                    result = call_backend_files("/thread/analyze", [analyzer_file])
+                elif analyzer_text.strip():
+                    result = call_backend(
+                        "POST",
+                        "/thread/analyze",
+                        {
+                            "text": analyzer_text,
+                            "source_type": analyzer_source_type,
+                        },
+                    )
+                else:
+                    st.warning("Provide a thread to analyze.")
+                    result = None
+                if result:
+                    st.write("Latest redacted message (preview):")
+                    st.code(result.get("latest_message_redacted", "")[:400])
+                    analysis = result.get("analysis", {})
+                    st.markdown("### Thread Context Summary")
+                    st.json(analysis.get("thread_summary", {}))
+                    st.markdown("### Persona")
+                    persona = analysis.get("persona", {})
+                    st.write(
+                        f"**{persona.get('persona_name', 'Persona')}** — "
+                        f"{persona.get('role', 'unknown')} / "
+                        f"{persona.get('experience_level', 'unknown')}"
+                    )
+                    st.write(f"Motivation: {persona.get('primary_motivation', '')}")
+                    st.write(f"Tone: {persona.get('tone', '')}")
+                    st.markdown("### Next Questions")
+                    next_questions = analysis.get("next_questions", {})
+                    st.write("To clarify:")
+                    st.write(next_questions.get("to_clarify", []))
+                    st.write("To unblock:")
+                    st.write(next_questions.get("to_unblock", []))
+                    st.write("Risks if ignored:")
+                    st.write(next_questions.get("risks_if_ignored", []))
+            except requests.RequestException as exc:
+                st.error(f"Analyze failed: {format_backend_error(exc)}")
+
+with tabs[3]:
     st.subheader("Pattern overview")
     st.caption("Themes are shown from aggregate counts; no raw text is displayed.")
-    st.info(
-        "High-risk uploads are parsed and counted, but their text is not stored. "
-        "Themes remain visible to support early discovery."
-    )
     if st.button("Rebuild patterns"):
         try:
             result = call_backend("POST", "/patterns/rebuild")
@@ -269,42 +346,19 @@ with tabs[2]:
     if summary:
         table_rows = []
         for item in summary:
-            labels = []
-            if item.get("high_dominant"):
-                labels.append("HIGH-RISK DOMINANT")
-            if item.get("insight_quality") == "COUNTS_ONLY":
-                labels.append("COUNTS ONLY")
-            label_text = f" ({' / '.join(labels)})" if labels else ""
-            theme_label = f"⚠️ {item.get('theme')}{label_text}" if labels else item.get("theme")
             table_rows.append(
                 {
-                    "theme": theme_label,
+                    "theme": item.get("theme"),
                     "total": item.get("count_total", item.get("count", 0)),
-                    "low": item.get("count_low", 0),
-                    "medium": item.get("count_medium", 0),
-                    "high": item.get("count_high", 0),
                     "meets_k": item.get("meets_k", False),
-                    "high_ratio": f"{item.get('high_ratio', 0):.2f}",
-                    "insight_quality": item.get("insight_quality", "UNKNOWN"),
                 }
             )
         df = pd.DataFrame(table_rows)
-
-        def highlight_row(row: pd.Series) -> List[str]:
-            if "HIGH-RISK DOMINANT" in str(row["theme"]):
-                return ["background-color: #fff3cd"] * len(row)
-            if "COUNTS ONLY" in str(row["theme"]):
-                return ["background-color: #f8d7da"] * len(row)
-            return [""] * len(row)
-
-        st.dataframe(
-            df.style.apply(highlight_row, axis=1),
-            use_container_width=True,
-        )
+        st.dataframe(df, use_container_width=True)
     else:
         st.info("No themes available yet. Load data to see counts.")
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("Generate synthetic context pack")
     st.caption("Outputs are synthetic and privacy-safe.")
     try:
@@ -339,14 +393,6 @@ with tabs[3]:
     is_below_threshold = (
         k_threshold is not None and theme != "No themes" and selected_count < k_threshold
     )
-    selected_theme = theme_details.get(theme)
-    if selected_theme and (
-        selected_theme.get("insight_quality") == "COUNTS_ONLY"
-        or selected_theme.get("high_dominant")
-    ):
-        st.warning(
-            "This theme is mostly high-risk. Generation will be generic and labeled lower confidence."
-        )
     if st.button(
         "Generate",
         disabled=theme == "No themes",
@@ -424,7 +470,7 @@ with tabs[3]:
             except requests.RequestException as exc:
                 st.error(f"Snippet extraction failed: {format_backend_error(exc)}")
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("Export markdown")
     try:
         generated = call_backend("GET", "/generated").get("items", [])
@@ -447,7 +493,7 @@ with tabs[4]:
     else:
         st.info("No generated items available yet.")
 
-with tabs[5]:
+with tabs[6]:
     st.subheader("Audit log")
     try:
         audit = call_backend("GET", "/audit/recent").get("items", [])
