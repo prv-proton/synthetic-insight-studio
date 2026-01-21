@@ -29,6 +29,7 @@ from .schemas import (
     IngestRequest,
     OllamaStatus,
     ResetResponse,
+    SettingsResponse,
     ThemeSummary,
 )
 from .storage import (
@@ -254,3 +255,8 @@ def ollama_status() -> OllamaStatus:
         return OllamaStatus(available=response.status_code < 500)
     except Exception as exc:  # noqa: BLE001
         return OllamaStatus(available=False, detail=str(exc))
+
+
+@app.get("/settings", response_model=SettingsResponse)
+def get_settings() -> SettingsResponse:
+    return SettingsResponse(k_threshold=settings.k_threshold)
