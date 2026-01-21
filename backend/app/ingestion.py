@@ -97,4 +97,4 @@ def assess_risk(
 
 
 def should_store_sanitized(risk_level: str) -> bool:
-    return risk_level != "HIGH"
+    return True  # Store all risk levels for pattern extraction

@@ -24,6 +24,7 @@ from .ingestion import (
     trim_excess_whitespace,
 )
 from .pii import detect_pii, redact
+from .tag_redact import redact_tagged
 from .schemas import (
     GenerateRequest,
     IngestRequest,
@@ -81,7 +82,8 @@ async def sanitize(
     files: List[UploadFile] | None = File(default=None),
 ) -> Dict[str, object]:
     if files:
-        items = await _sanitize_files(files)
+        mode = request.query_params.get("mode", "mask_only")
+        items = await _sanitize_files(files, mode)
         record(
             "sanitize",
             {"count": len(items), "items": [item["audit"] for item in items]},
@@ -92,7 +94,8 @@ async def sanitize(
     if not text or not isinstance(text, str):
         raise HTTPException(status_code=400, detail="Text is required")
     source_type = payload.get("source_type", "auto")
-    response, audit = _sanitize_text(text, source_type, filename=None)
+    mode = payload.get("mode", "mask_only") if isinstance(payload, dict) else "mask_only"
+    response, audit = _sanitize_text(text, source_type, mode, filename=None)
     record("sanitize", {"count": 1, "items": [audit]})
     return response
 
@@ -160,79 +163,17 @@ async def _ingest_files(files: List[UploadFile]) -> Dict[str, object]:
                 detail=f"{filename} must contain at least 10 characters",
             )
 
-        source_file_type = extension.lstrip(".")
-        inferred_source_type = (
-            "email_like" if extension == ".eml" else infer_source_type(text)
-        )
-        normalization_applied = False
-        normalization_meta: Dict[str, object] | None = None
-        working_text = text
-
-        if inferred_source_type == "email_like":
-            normalized = normalize_email(text)
-            working_text = normalized.normalized_text
-            normalization_meta = normalized.meta
-            normalization_applied = True
-
-        redacted, redaction_stats = redact(working_text)
-        post_redaction_findings = detect_pii(redacted)
-        quoted_thread = detect_quoted_thread(working_text)
-        attachment_hints = detect_attachment_hints(working_text)
-        risk_level, risk_reasons = assess_risk(
-            redaction_stats,
-            post_redaction_findings,
-            inferred_source_type == "email_like",
-            quoted_thread,
-            attachment_hints,
-        )
-        storage_decision = (
-            "sanitized_text_stored"
-            if should_store_sanitized(risk_level)
-            else "aggregates_only"
-        )
-
-        theme = pattern_lib.classify(redacted)
-        if should_store_sanitized(risk_level):
-            sanitized.append({"text_sanitized": redacted, "theme": theme})
-
-        theme_counts.append(
-            {
-                "theme": theme,
-                "count_low": 1 if risk_level == "LOW" else 0,
-                "count_medium": 1 if risk_level == "MEDIUM" else 0,
-                "count_high": 1 if risk_level == "HIGH" else 0,
-            }
-        )
-
-        record(
-            "ingest_txt",
-            {
-                "filename": filename,
-                "source_file_type": source_file_type,
-                "inferred_source_type": inferred_source_type,
-                "normalization_applied": normalization_applied,
-                "normalization_meta": normalization_meta,
-                "redaction_counts": redaction_stats,
-                "post_redaction_findings": len(post_redaction_findings),
-                "risk_level": risk_level,
-                "risk_reasons": risk_reasons,
-                "storage_decision": storage_decision,
-            },
-        )
-
-        responses.append(
-            {
-                "filename": filename,
-                "source_file_type": source_file_type,
-                "inferred_source_type": inferred_source_type,
-                "normalization_applied": normalization_applied,
-                "redaction_counts": redaction_stats,
-                "risk_level": risk_level,
-                "risk_reasons": risk_reasons,
-                "storage_decision": storage_decision,
-                "sanitized_text": redacted if risk_level != "HIGH" else None,
-            }
-        )
+        # Split threaded content by separator
+        text_segments = [segment.strip() for segment in text.split('---') if segment.strip()]
+        if len(text_segments) > 1:
+            # Process each segment as separate enquiry
+            for segment in text_segments:
+                if len(segment) < 10:
+                    continue
+                _process_text_segment(segment, filename, extension, sanitized, theme_counts, responses)
+        else:
+            # Process as single text
+            _process_text_segment(text, filename, extension, sanitized, theme_counts, responses)
 
     upsert_theme_counts(theme_counts)
     if sanitized:
@@ -242,8 +183,92 @@ async def _ingest_files(files: List[UploadFile]) -> Dict[str, object]:
     return {"status": "ok", "ingested": len(responses), "items": responses}
 
 
+def _process_text_segment(
+    text: str,
+    filename: str,
+    extension: str,
+    sanitized: List[Dict[str, str]],
+    theme_counts: List[Dict[str, int]],
+    responses: List[Dict[str, object]],
+) -> None:
+    source_file_type = extension.lstrip(".")
+    inferred_source_type = (
+        "email_like" if extension == ".eml" else infer_source_type(text)
+    )
+    normalization_applied = False
+    normalization_meta: Dict[str, object] | None = None
+    working_text = text
+
+    if inferred_source_type == "email_like":
+        normalized = normalize_email(text)
+        working_text = normalized.normalized_text
+        normalization_meta = normalized.meta
+        normalization_applied = True
+
+    redacted, redaction_stats = redact(working_text)
+    post_redaction_findings = detect_pii(redacted)
+    quoted_thread = detect_quoted_thread(working_text)
+    attachment_hints = detect_attachment_hints(working_text)
+    risk_level, risk_reasons = assess_risk(
+        redaction_stats,
+        post_redaction_findings,
+        inferred_source_type == "email_like",
+        quoted_thread,
+        attachment_hints,
+    )
+    storage_decision = (
+        "sanitized_text_stored"
+        if should_store_sanitized(risk_level)
+        else "aggregates_only"
+    )
+
+    theme = pattern_lib.classify(redacted)
+    if should_store_sanitized(risk_level):
+        sanitized.append({"text_sanitized": redacted, "theme": theme})
+
+    theme_counts.append(
+        {
+            "theme": theme,
+            "count_low": 1 if risk_level == "LOW" else 0,
+            "count_medium": 1 if risk_level == "MEDIUM" else 0,
+            "count_high": 1 if risk_level == "HIGH" else 0,
+        }
+    )
+
+    record(
+        "ingest_txt",
+        {
+            "filename": filename,
+            "source_file_type": source_file_type,
+            "inferred_source_type": inferred_source_type,
+            "normalization_applied": normalization_applied,
+            "normalization_meta": normalization_meta,
+            "redaction_counts": redaction_stats,
+            "post_redaction_findings": len(post_redaction_findings),
+            "risk_level": risk_level,
+            "risk_reasons": risk_reasons,
+            "storage_decision": storage_decision,
+        },
+    )
+
+    responses.append(
+        {
+            "filename": filename,
+            "source_file_type": source_file_type,
+            "inferred_source_type": inferred_source_type,
+            "normalization_applied": normalization_applied,
+            "redaction_counts": redaction_stats,
+            "risk_level": risk_level,
+            "risk_reasons": risk_reasons,
+            "storage_decision": storage_decision,
+            "sanitized_text": redacted,
+        }
+    )
+
+
 async def _sanitize_files(
     files: List[UploadFile],
+    mode: str,
 ) -> List[Dict[str, Dict[str, object]]]:
     items: List[Dict[str, Dict[str, object]]] = []
     for file in files:
@@ -262,7 +287,7 @@ async def _sanitize_files(
                 status_code=400, detail=f"{filename} must not be empty"
             )
         source_type = "email" if extension == ".eml" else "auto"
-        response, audit = _sanitize_text(text, source_type, filename=filename)
+        response, audit = _sanitize_text(text, source_type, mode, filename=filename)
         items.append({"response": response, "audit": audit})
     return items
 
@@ -270,6 +295,7 @@ async def _sanitize_files(
 def _sanitize_text(
     text: str,
     source_type: str,
+    mode: str,
     filename: str | None,
 ) -> tuple[Dict[str, object], Dict[str, object]]:
     normalized_text = text
@@ -289,25 +315,77 @@ def _sanitize_text(
         normalized = normalize_email(text)
         normalized_text = normalized.normalized_text
         normalization_meta = normalized.meta
-    sanitized_text, redaction_stats = redact(normalized_text)
+    if mode not in {"mask_only", "mask_and_extract_evidence"}:
+        raise HTTPException(
+            status_code=400,
+            detail="mode must be one of: mask_only, mask_and_extract_evidence",
+        )
+    tagged_text, tag_redaction_stats = redact_tagged(normalized_text)
+    sanitized_text, pii_redaction_stats = redact(tagged_text)
     response: Dict[str, object] = {
         "sanitized_text": sanitized_text,
-        "redaction_stats": redaction_stats,
+        "tag_redaction_stats": tag_redaction_stats,
+        "pii_redaction_stats": pii_redaction_stats,
         "inferred_source_type": inferred_source_type,
         "normalization_meta": normalization_meta,
         "notes": [
             "Sanitize-only mode: no classification, no storage, no pattern extraction."
         ],
     }
+    if mode == "mask_and_extract_evidence":
+        snippets = _extract_evidence_snippets(sanitized_text)
+        sanitized_snippets: List[str] = []
+        for snippet in snippets:
+            snippet_tagged, _ = redact_tagged(snippet)
+            snippet_redacted, _ = redact(snippet_tagged)
+            sanitized_snippets.append(snippet_redacted)
+        response["evidence_snippets"] = sanitized_snippets
     if filename:
         response["filename"] = filename
     audit = {
         "filename": filename,
         "inferred_source_type": inferred_source_type,
-        "redaction_stats": redaction_stats,
+        "tag_redaction_stats": tag_redaction_stats,
+        "pii_redaction_stats": pii_redaction_stats,
         "normalized": normalization_meta is not None,
     }
     return response, audit
+
+
+def _extract_evidence_snippets(text: str) -> List[str]:
+    keywords = [
+        "questions",
+        "blocking",
+        "blocker",
+        "conflicting",
+        "remaining",
+        "expedite",
+        "status summary",
+        "status",
+        "decision",
+        "next steps",
+    ]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    candidates: List[str] = []
+    for line in lines:
+        lowered = line.lower()
+        if any(keyword in lowered for keyword in keywords):
+            candidates.append(line)
+    if len(candidates) < 3:
+        for line in lines:
+            if line in candidates:
+                continue
+            if "?" in line or "status" in line.lower():
+                candidates.append(line)
+            if len(candidates) >= 5:
+                break
+    if len(candidates) < 3:
+        for line in lines:
+            if line not in candidates:
+                candidates.append(line)
+            if len(candidates) >= 3:
+                break
+    return [candidate[:240].strip() for candidate in candidates[:5]]
 
 
 @app.post("/patterns/rebuild")
@@ -367,6 +445,67 @@ def _high_ratio(count_high: int, count_total: int) -> float:
     return count_high / denominator
 
 
+def _evidence_confidence(insight_quality: str) -> str:
+    if insight_quality == "LIMITED":
+        return "MEDIUM"
+    return "HIGH"
+
+
+def _build_evidence_cards(
+    theme: str,
+    pattern: Dict[str, object],
+    insight_quality: str,
+) -> List[Dict[str, str]]:
+    if insight_quality == "COUNTS_ONLY":
+        return [
+            {
+                "title": "Common decision points",
+                "detail": f"Aggregate counts for {theme} only; no text patterns retained.",
+                "confidence": "LOW",
+            },
+            {
+                "title": "Likely blockers",
+                "detail": "Generic blockers inferred from count-only aggregates.",
+                "confidence": "LOW",
+            },
+            {
+                "title": "Typical questions to ask agency",
+                "detail": "Use standard permitting checklists; no text-derived signals.",
+                "confidence": "LOW",
+            },
+        ]
+    top_terms = pattern.get("top_terms") or []
+    common_phrases = pattern.get("common_phrases") or []
+    sentiment = pattern.get("sentiment_proxy") or {}
+    confidence = _evidence_confidence(insight_quality)
+    return [
+        {
+            "title": "Common decision points",
+            "detail": (
+                "Recurring terms: "
+                + (", ".join(top_terms[:5]) if top_terms else "Limited signals.")
+            ),
+            "confidence": confidence,
+        },
+        {
+            "title": "Likely blockers",
+            "detail": (
+                "Frequent phrases: "
+                + (", ".join(common_phrases[:3]) if common_phrases else "Limited signals.")
+            ),
+            "confidence": confidence,
+        },
+        {
+            "title": "Typical questions to ask agency",
+            "detail": (
+                "Sentiment proxy: "
+                f"negative={sentiment.get('negative', 0)}, positive={sentiment.get('positive', 0)}."
+            ),
+            "confidence": confidence,
+        },
+    ]
+
+
 @app.get("/themes", response_model=List[ThemeSummary])
 def themes() -> List[ThemeSummary]:
     summary = get_theme_counts()
@@ -408,6 +547,33 @@ def themes() -> List[ThemeSummary]:
             )
         )
     return response
+
+
+@app.get("/evidence/cards")
+def evidence_cards(theme: str) -> Dict[str, object]:
+    pattern_entry = get_pattern(theme)
+    if not pattern_entry:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    pattern = pattern_entry["pattern"]
+    theme_counts = get_theme_count(theme)
+    count_total = (
+        theme_counts["count_total"]
+        if theme_counts
+        else int(pattern.get("count_total") or pattern.get("count", 0))
+    )
+    count_low = theme_counts["count_low"] if theme_counts else int(pattern.get("count_low", 0))
+    count_medium = (
+        theme_counts["count_medium"] if theme_counts else int(pattern.get("count_medium", 0))
+    )
+    text_available_count = count_low + count_medium
+    insight_quality = _insight_quality(text_available_count)
+    cards = _build_evidence_cards(theme, pattern, insight_quality)
+    return {
+        "theme": theme,
+        "count_total": count_total,
+        "insight_quality": insight_quality,
+        "evidence_cards": cards,
+    }
 
 
 @app.post("/generate")
