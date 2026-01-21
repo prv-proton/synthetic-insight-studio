@@ -187,23 +187,22 @@ with tabs[2]:
     is_below_threshold = (
         k_threshold is not None and theme != "No themes" and selected_count < k_threshold
     )
-    allow_below_threshold = False
+    allow_below_threshold = True
     if is_below_threshold:
         st.warning(
             f"Theme has {selected_count} records; need at least {k_threshold} to generate."
         )
-        allow_below_threshold = st.checkbox(
-            "Allow generation with fewer records (lower quality expected)",
+        enforce_threshold = st.checkbox(
+            "Enforce minimum record threshold",
             value=False,
         )
+        allow_below_threshold = not enforce_threshold
     if st.button(
         "Generate",
-        disabled=theme == "No themes" or (is_below_threshold and not allow_below_threshold),
+        disabled=theme == "No themes",
     ):
         if theme == "No themes":
             st.warning("Load data and rebuild patterns first.")
-        elif is_below_threshold and not allow_below_threshold:
-            st.warning("Select a theme that meets the minimum record threshold.")
         else:
             try:
                 payload = {
