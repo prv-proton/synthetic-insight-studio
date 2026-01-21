@@ -39,6 +39,7 @@ from .storage import (
     get_generated,
     get_pattern,
     get_sanitized_texts,
+    get_texts_for_patterns,
     get_theme_count,
     get_theme_counts,
     init_db,
@@ -400,7 +401,8 @@ def _rebuild_patterns() -> List[str]:
     audit_payload: List[Dict[str, object]] = []
     for entry in theme_counts:
         theme = entry["theme"]
-        texts = get_sanitized_texts(theme)
+        # Use raw texts for pattern extraction when available, sanitized otherwise
+        texts = get_texts_for_patterns(theme)
         text_available_count = len(texts)
         pattern = pattern_lib.build_pattern(texts)
         pattern.update(
@@ -515,7 +517,7 @@ def themes() -> List[ThemeSummary]:
         count_high = entry["count_high"]
         count_low = entry["count_low"]
         count_medium = entry["count_medium"]
-        text_available_count = count_low + count_medium
+        text_available_count = count_low + count_medium + count_high
         high_ratio = _high_ratio(count_high, count_total)
         high_dominant = count_high >= 1 and high_ratio >= settings.high_dominant_ratio
         insight_quality = _insight_quality(text_available_count)
@@ -565,7 +567,8 @@ def evidence_cards(theme: str) -> Dict[str, object]:
     count_medium = (
         theme_counts["count_medium"] if theme_counts else int(pattern.get("count_medium", 0))
     )
-    text_available_count = count_low + count_medium
+    count_high = theme_counts["count_high"] if theme_counts else int(pattern.get("count_high", 0))
+    text_available_count = count_low + count_medium + count_high
     insight_quality = _insight_quality(text_available_count)
     cards = _build_evidence_cards(theme, pattern, insight_quality)
     return {
@@ -592,7 +595,8 @@ def generate(request: GenerateRequest) -> Dict[str, object]:
     count_medium = (
         theme_counts["count_medium"] if theme_counts else int(pattern.get("count_medium", 0))
     )
-    text_available_count = count_low + count_medium
+    count_high = theme_counts["count_high"] if theme_counts else int(pattern.get("count_high", 0))
+    text_available_count = count_low + count_medium + count_high
     insight_quality = _insight_quality(text_available_count)
     if (
         count_total < settings.k_threshold

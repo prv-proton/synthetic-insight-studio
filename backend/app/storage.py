@@ -83,15 +83,25 @@ def insert_enquiries(
 ) -> None:
     now = datetime.utcnow().isoformat()
     with _connect() as conn:
-        conn.executemany(
+        # Insert sanitized enquiries and get their IDs
+        sanitized_list = list(sanitized)
+        cursor = conn.executemany(
             "INSERT INTO enquiries (text_sanitized, theme, created_at) VALUES (?, ?, ?)",
-            [(item["text_sanitized"], item["theme"], now) for item in sanitized],
+            [(item["text_sanitized"], item["theme"], now) for item in sanitized_list],
         )
+        
         if settings.store_raw and raw:
-            conn.executemany(
-                "INSERT INTO enquiries_raw (text_raw, created_at) VALUES (?, ?)",
-                [(text, now) for text in raw],
-            )
+            # Get the starting ID for the batch we just inserted
+            last_id = cursor.lastrowid
+            if last_id:
+                start_id = last_id - len(sanitized_list) + 1
+                raw_list = list(raw)
+                # Insert raw texts with matching IDs
+                raw_with_ids = [(start_id + i, text, now) for i, text in enumerate(raw_list[:len(sanitized_list)])]
+                conn.executemany(
+                    "INSERT INTO enquiries_raw (id, text_raw, created_at) VALUES (?, ?, ?)",
+                    raw_with_ids,
+                )
 
 
 def upsert_patterns(theme: str, pattern: Dict[str, Any]) -> None:
@@ -283,6 +293,33 @@ def get_sanitized_texts(theme: Optional[str] = None) -> List[str]:
         else:
             cursor = conn.execute("SELECT text_sanitized FROM enquiries")
         return [row["text_sanitized"] for row in cursor.fetchall()]
+
+
+def get_raw_texts(theme: Optional[str] = None) -> List[str]:
+    """Get raw texts for pattern extraction when available."""
+    with _connect() as conn:
+        if theme:
+            # Join with enquiries to get theme-filtered raw texts
+            cursor = conn.execute(
+                """
+                SELECT er.text_raw 
+                FROM enquiries_raw er
+                JOIN enquiries e ON er.id = e.id
+                WHERE e.theme = ?
+                """, (theme,)
+            )
+        else:
+            cursor = conn.execute("SELECT text_raw FROM enquiries_raw")
+        return [row["text_raw"] for row in cursor.fetchall()]
+
+
+def get_texts_for_patterns(theme: Optional[str] = None) -> List[str]:
+    """Get the best available texts for pattern extraction - raw if available, sanitized otherwise."""
+    if settings.store_raw:
+        raw_texts = get_raw_texts(theme)
+        if raw_texts:
+            return raw_texts
+    return get_sanitized_texts(theme)
 
 
 def get_audit_recent(limit: int = 50) -> List[Dict[str, Any]]:
