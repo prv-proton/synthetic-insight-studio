@@ -72,6 +72,12 @@ Use `POST /sanitize` to preview masked content when you only have a few examples
 
 This mode **does not** classify, store, or generate. It returns the same text with sensitive values masked for review, along with redaction stats and normalization details.
 
+### Tagged thread demo
+
+1. Open the UI **Sanitize (Preview)** tab.
+2. Upload `data/tagged_threads_sample.txt`.
+3. Verify tagged fields are tokenized and (optionally) inspiration snippets are extracted from masked text only.
+
 ## OpenShift deployment
 
 Manifests are in `openshift/`. Apply them in your OpenShift cluster:
