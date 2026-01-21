@@ -52,3 +52,7 @@ class ResetResponse(BaseModel):
 class OllamaStatus(BaseModel):
     available: bool
     detail: Optional[str] = None
+
+
+class SettingsResponse(BaseModel):
+    k_threshold: int
