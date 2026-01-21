@@ -22,6 +22,23 @@ def call_backend(method: str, path: str, payload: Dict[str, Any] | None = None) 
     return response.json()
 
 
+def format_backend_error(exc: requests.RequestException) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    try:
+        data = response.json()
+    except ValueError:
+        data = response.text
+    if isinstance(data, dict):
+        detail = data.get("detail")
+        if detail:
+            return f"{response.status_code} {response.reason}: {detail}"
+    if isinstance(data, str) and data.strip():
+        return f"{response.status_code} {response.reason}: {data}"
+    return f"{response.status_code} {response.reason}"
+
+
 def get_ollama_status() -> str:
     try:
         status = call_backend("GET", "/ollama/status")
@@ -57,7 +74,7 @@ with tabs[0]:
         except FileNotFoundError:
             st.error("Seed data not found in container.")
         except requests.RequestException as exc:
-            st.error(f"Failed to ingest data: {exc}")
+            st.error(f"Failed to ingest data: {format_backend_error(exc)}")
 
     st.markdown("---")
     st.subheader("Upload synthetic dataset")
@@ -81,7 +98,7 @@ with tabs[1]:
             result = call_backend("POST", "/patterns/rebuild")
             st.success(f"Patterns rebuilt for {len(result.get('themes', []))} themes.")
         except requests.RequestException as exc:
-            st.error(f"Failed to rebuild patterns: {exc}")
+            st.error(f"Failed to rebuild patterns: {format_backend_error(exc)}")
 
     try:
         summary = call_backend("GET", "/themes")
@@ -92,7 +109,11 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Generate synthetic context pack")
     st.caption("Outputs are synthetic and privacy-safe, with k-threshold enforcement.")
-    themes = call_backend("GET", "/themes")
+    try:
+        themes = call_backend("GET", "/themes")
+    except requests.RequestException as exc:
+        themes = []
+        st.error(f"Failed to load themes: {format_backend_error(exc)}")
     theme_options = [item["theme"] for item in themes] if isinstance(themes, list) else []
     theme = st.selectbox("Theme", options=theme_options if theme_options else ["No themes"])
     kind = st.selectbox("Kind", options=["enquiry", "persona", "scenario"])
@@ -108,7 +129,7 @@ with tabs[2]:
                 st.write(result.get("disclaimer"))
                 st.write(result.get("items", []))
             except requests.RequestException as exc:
-                st.error(f"Generation failed: {exc}")
+                st.error(f"Generation failed: {format_backend_error(exc)}")
 
 with tabs[3]:
     st.subheader("Export markdown")
@@ -139,4 +160,4 @@ with tabs[4]:
         audit = call_backend("GET", "/audit/recent").get("items", [])
         st.table(audit)
     except requests.RequestException as exc:
-        st.error(f"Failed to load audit log: {exc}")
+        st.error(f"Failed to load audit log: {format_backend_error(exc)}")
