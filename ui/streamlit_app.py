@@ -17,9 +17,14 @@ backend_url_default = os.getenv("BACKEND_URL", "http://backend:8000")
 backend_url = st.sidebar.text_input("Backend URL", value=backend_url_default)
 
 
-def call_backend(method: str, path: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def call_backend(
+    method: str,
+    path: str,
+    payload: Dict[str, Any] | None = None,
+    timeout: int = 10,
+) -> Dict[str, Any]:
     url = f"{backend_url}{path}"
-    response = requests.request(method, url, json=payload, timeout=10)
+    response = requests.request(method, url, json=payload, timeout=timeout)
     response.raise_for_status()
     return response.json()
 
@@ -28,13 +33,14 @@ def call_backend_files(
     path: str,
     files: List[st.runtime.uploaded_file_manager.UploadedFile],
     params: Dict[str, Any] | None = None,
+    timeout: int = 10,
 ) -> Dict[str, Any]:
     url = f"{backend_url}{path}"
     payload = [
         ("files", (file.name, file.getvalue(), file.type or "text/plain"))
         for file in files
     ]
-    response = requests.post(url, files=payload, params=params, timeout=10)
+    response = requests.post(url, files=payload, params=params, timeout=timeout)
     response.raise_for_status()
     return response.json()
 
@@ -290,7 +296,7 @@ with tabs[2]:
         if st.button("Analyze Thread"):
             try:
                 if analyzer_file:
-                    result = call_backend_files("/thread/analyze", [analyzer_file])
+                    result = call_backend_files("/thread/analyze", [analyzer_file], timeout=30)
                 elif analyzer_text.strip():
                     result = call_backend(
                         "POST",
@@ -299,6 +305,7 @@ with tabs[2]:
                             "text": analyzer_text,
                             "source_type": analyzer_source_type,
                         },
+                        timeout=30,
                     )
                 else:
                     st.warning("Provide a thread to analyze.")
