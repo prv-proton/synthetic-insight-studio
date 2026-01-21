@@ -166,9 +166,9 @@ def upsert_theme_counts(counts: Iterable[Dict[str, Any]]) -> None:
 def get_theme_counts() -> List[Dict[str, Any]]:
     with _connect() as conn:
         cursor = conn.execute("SELECT * FROM theme_counts")
-        results: List[Dict[str, Any]] = []
+        results_by_theme: Dict[str, Dict[str, Any]] = {}
         for row in cursor.fetchall():
-            results.append(
+            results_by_theme[row["theme"]] = (
                 {
                     "theme": row["theme"],
                     "count_low": row["count_low"],
@@ -177,13 +177,13 @@ def get_theme_counts() -> List[Dict[str, Any]]:
                     "count_total": row["count_total"],
                 }
             )
-        if results:
-            return results
         cursor = conn.execute("SELECT theme, pattern_json FROM patterns")
         for row in cursor.fetchall():
+            if row["theme"] in results_by_theme:
+                continue
             pattern = json.loads(row["pattern_json"])
             count_total = int(pattern.get("count_total") or pattern.get("count", 0))
-            results.append(
+            results_by_theme[row["theme"]] = (
                 {
                     "theme": row["theme"],
                     "count_low": count_total,
@@ -192,7 +192,7 @@ def get_theme_counts() -> List[Dict[str, Any]]:
                     "count_total": count_total,
                 }
             )
-        return results
+        return list(results_by_theme.values())
 
 
 def get_theme_count(theme: str) -> Optional[Dict[str, Any]]:
