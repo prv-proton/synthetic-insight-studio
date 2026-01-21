@@ -14,15 +14,6 @@ st.info("Synthetic / Exploratory — Not real user data")
 
 backend_url_default = os.getenv("BACKEND_URL", "http://backend:8000")
 backend_url = st.sidebar.text_input("Backend URL", value=backend_url_default)
-if st.sidebar.button("Clear stored data"):
-    try:
-        result = call_backend("POST", "/reset")
-        if result.get("cleared"):
-            st.sidebar.success("Stored data cleared.")
-        else:
-            st.sidebar.warning("Clear request completed with warnings.")
-    except requests.RequestException as exc:
-        st.sidebar.error(f"Clear failed: {format_backend_error(exc)}")
 
 
 def call_backend(method: str, path: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -58,6 +49,17 @@ def format_backend_error(exc: requests.RequestException) -> str:
     if isinstance(data, str) and data.strip():
         return f"{response.status_code} {response.reason}: {data}"
     return f"{response.status_code} {response.reason}"
+
+
+if st.sidebar.button("Clear stored data"):
+    try:
+        result = call_backend("POST", "/reset")
+        if result.get("cleared"):
+            st.sidebar.success("Stored data cleared.")
+        else:
+            st.sidebar.warning("Clear request completed with warnings.")
+    except requests.RequestException as exc:
+        st.sidebar.error(f"Clear failed: {format_backend_error(exc)}")
 
 
 def get_ollama_status() -> str:
