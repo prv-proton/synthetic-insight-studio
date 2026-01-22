@@ -95,9 +95,6 @@ st.sidebar.write(get_ollama_status())
 tabs = st.tabs(
     [
         "Load data",
-        "Sanitize (Preview)",
-        "Single Thread Analyzer",
-        "Thread → Context",
         "Generate realistic pseudo enquiry",
         "Pattern overview",
         "Generate context pack",
@@ -161,340 +158,24 @@ with tabs[0]:
             st.error(f"Upload failed: {format_backend_error(exc)}")
 
 with tabs[1]:
-    st.subheader("Sanitize (Preview)")
-    st.info(
-        "This does not classify or store content. It only masks sensitive data for review."
-    )
-    extract_snippets = st.checkbox("Extract inspiration snippets", value=False)
-    sanitize_source_type = st.selectbox(
-        "Source type",
-        options=["auto", "plain", "email"],
-        help="Choose how to interpret pasted text for normalization.",
-    )
-    sanitize_text = st.text_area(
-        "Paste text or email content",
-        height=200,
-    )
-    sanitize_files = st.file_uploader(
-        "Upload .txt, .eml, or .jsonl files",
-        type=["txt", "eml", "jsonl"],
-        accept_multiple_files=True,
-    )
-    if st.button("Mask sensitive info"):
-        try:
-            if sanitize_files:
-                mode = "mask_and_extract_evidence" if extract_snippets else "mask_only"
-                result = call_backend_files("/sanitize", sanitize_files, params={"mode": mode})
-            elif sanitize_text.strip():
-                mode = "mask_and_extract_evidence" if extract_snippets else "mask_only"
-                result = call_backend(
-                    "POST",
-                    "/sanitize",
-                    {
-                        "text": sanitize_text,
-                        "source_type": sanitize_source_type,
-                        "mode": mode,
-                    },
-                )
-            else:
-                st.warning("Provide text or upload a file to sanitize.")
-                result = None
-            if result:
-                items = result.get("items")
-                if items:
-                    for item in items:
-                        with st.expander(item.get("filename", "Sanitized file"), expanded=True):
-                            st.write(
-                                f"Inferred source type: {item.get('inferred_source_type')}"
-                            )
-                            st.write("Normalization metadata:")
-                            st.json(item.get("normalization_meta"))
-                            st.write("Redaction stats:")
-                            st.table([item.get("redaction_stats", {})])
-                            st.text_area(
-                                "Sanitized text",
-                                value=item.get("sanitized_text", ""),
-                                height=300,
-                                disabled=True,
-                            )
-                            evidence_snippets = item.get("evidence_snippets")
-                            if evidence_snippets:
-                                st.write("Inspiration snippets:")
-                                for snippet in evidence_snippets:
-                                    st.code(snippet)
-                                st.caption(
-                                    "Snippets are extracted only from masked text; nothing is stored."
-                                )
-                else:
-                    st.write(
-                        f"Inferred source type: {result.get('inferred_source_type')}"
-                    )
-                    st.write("Normalization metadata:")
-                    st.json(result.get("normalization_meta"))
-                    st.write("Redaction stats:")
-                    st.table([result.get("redaction_stats", {})])
-                    st.text_area(
-                        "Sanitized text",
-                        value=result.get("sanitized_text", ""),
-                        height=300,
-                        disabled=True,
-                    )
-                    evidence_snippets = result.get("evidence_snippets")
-                    if evidence_snippets:
-                        st.write("Inspiration snippets:")
-                        for snippet in evidence_snippets:
-                            st.code(snippet)
-                        st.caption(
-                            "Snippets are extracted only from masked text; nothing is stored."
-                        )
-        except requests.RequestException as exc:
-            st.error(f"Sanitize failed: {format_backend_error(exc)}")
-
-with tabs[2]:
-    st.subheader("Single Thread Analyzer")
-    st.info("All outputs are synthetic/derived and redacted. Raw thread is not stored.")
-    analyzer_enhanced = st.toggle(
-        "ChatGPT-like synthesis (enhanced)",
-        value=True,
-        key="analyzer_enhanced",
-    )
-    analyzer_source_type = st.selectbox(
-        "Source type",
-        options=["auto", "plain", "email"],
-        help="Use email for .eml uploads or email-style pasted text.",
-    )
-    analyzer_text = st.text_area(
-        "Paste a single email thread",
-        height=200,
-        key="analyzer_text",
-    )
-    analyzer_file = st.file_uploader(
-        "Upload a single .txt or .eml thread",
-        type=["txt", "eml"],
-        key="analyzer_file",
-    )
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Mask Only"):
-            try:
-                if analyzer_file:
-                    result = call_backend_files("/sanitize", [analyzer_file])
-                    item = result.get("items", [{}])[0]
-                elif analyzer_text.strip():
-                    result = call_backend(
-                        "POST",
-                        "/sanitize",
-                        {
-                            "text": analyzer_text,
-                            "source_type": analyzer_source_type,
-                            "mode": "mask_only",
-                        },
-                    )
-                    item = result
-                else:
-                    st.warning("Provide a thread to mask.")
-                    item = None
-                if item:
-                    st.write("Redacted preview:")
-                    st.code((item.get("sanitized_text", "") or "")[:400])
-                    st.write("Redaction stats:")
-                    st.table([item.get("redaction_stats", {})])
-            except requests.RequestException as exc:
-                st.error(f"Mask failed: {format_backend_error(exc)}")
-    with col2:
-        if st.button("Analyze Thread"):
-            try:
-                if analyzer_file:
-                    result = call_backend_files(
-                        "/thread/analyze",
-                        [analyzer_file],
-                        params={"enhanced": str(analyzer_enhanced).lower()},
-                        timeout=30,
-                    )
-                elif analyzer_text.strip():
-                    result = call_backend(
-                        "POST",
-                        "/thread/analyze",
-                        {
-                            "text": analyzer_text,
-                            "source_type": analyzer_source_type,
-                            "enhanced": analyzer_enhanced,
-                        },
-                        timeout=30,
-                    )
-                else:
-                    st.warning("Provide a thread to analyze.")
-                    result = None
-                if result:
-                    st.write("Latest redacted message (preview):")
-                    st.code(result.get("latest_message_redacted", "")[:400])
-                    tco = result.get("tco", {})
-                    st.markdown("### Thread Context Object")
-                    st.json(tco)
-                    st.markdown("### Persona")
-                    persona = result.get("persona", {})
-                    st.write(
-                        f"**{persona.get('persona_name', 'Persona')}** — "
-                        f"{persona.get('from_role', 'unknown')} / "
-                        f"{persona.get('experience_level', 'unknown')}"
-                    )
-                    st.write(f"Motivation: {persona.get('primary_motivation', '')}")
-                    st.write(f"Tone: {persona.get('tone', '')}")
-                    st.markdown("### Next Questions")
-                    next_questions = result.get("next_questions", {})
-                    st.write("To clarify:")
-                    st.write(next_questions.get("to_clarify", []))
-                    st.write("To unblock:")
-                    st.write(next_questions.get("to_unblock", []))
-                    st.write("Risks if ignored:")
-                    st.write(next_questions.get("risks_if_ignored", []))
-                    quality = result.get("quality_signals", {})
-                    if quality:
-                        st.markdown("### Quality signals")
-                        st.write(f"Inferred fields: {quality.get('inferred_fields', [])}")
-                        st.write(f"Used repair: {quality.get('used_repair', False)}")
-                        st.write(f"Used improve: {quality.get('used_improve', False)}")
-                        st.write(f"Issues: {quality.get('issues', [])}")
-            except requests.RequestException as exc:
-                st.error(f"Analyze failed: {format_backend_error(exc)}")
-
-with tabs[3]:
-    st.subheader("Thread → Context")
-    st.info("Synthetic / Exploratory — Not real user data")
-    context_enhanced = st.toggle(
-        "ChatGPT-like synthesis (enhanced)",
-        value=True,
-        key="context_enhanced",
-    )
-    context_source_type = st.selectbox(
-        "Thread source type",
-        options=["auto", "plain", "email"],
-        key="context_source_type",
-    )
-    context_text = st.text_area(
-        "Paste a single email thread",
-        height=200,
-        key="context_text",
-    )
-    context_file = st.file_uploader(
-        "Upload a single .txt or .eml thread",
-        type=["txt", "eml"],
-        key="context_file",
-    )
-    if st.button("Analyze thread"):
-        try:
-            if context_file:
-                result = call_backend_files(
-                    "/thread/analyze",
-                    [context_file],
-                    params={"enhanced": str(context_enhanced).lower()},
-                    timeout=30,
-                )
-            elif context_text.strip():
-                result = call_backend(
-                    "POST",
-                    "/thread/analyze",
-                    {
-                        "text": context_text,
-                        "source_type": context_source_type,
-                        "enhanced": context_enhanced,
-                    },
-                    timeout=30,
-                )
-            else:
-                st.warning("Provide a thread to analyze.")
-                result = None
-            if result:
-                st.write("Latest redacted message (preview):")
-                st.code(result.get("latest_message_redacted", "")[:400])
-                st.write(f"Turns (redacted): {result.get('turns_redacted_count', 0)}")
-                st.markdown("### Thread Context Object")
-                st.json(result.get("tco", {}))
-                st.markdown("### Persona")
-                persona = result.get("persona", {})
-                st.write(
-                    f"**{persona.get('persona_name', 'Persona')}** — "
-                    f"{persona.get('from_role', 'unknown')} / "
-                    f"{persona.get('experience_level', 'unknown')}"
-                )
-                st.write(f"Motivation: {persona.get('primary_motivation', '')}")
-                st.write(f"Tone: {persona.get('tone', '')}")
-                st.markdown("### Next Questions")
-                next_questions = result.get("next_questions", {})
-                st.write("To clarify:")
-                st.write(next_questions.get("to_clarify", []))
-                st.write("To unblock:")
-                st.write(next_questions.get("to_unblock", []))
-                st.write("Risks if ignored:")
-                st.write(next_questions.get("risks_if_ignored", []))
-                quality = result.get("quality_signals", {})
-                if quality:
-                    st.markdown("### Quality signals")
-                    st.write(f"Inferred fields: {quality.get('inferred_fields', [])}")
-                    st.write(f"Used repair: {quality.get('used_repair', False)}")
-                    st.write(f"Used improve: {quality.get('used_improve', False)}")
-                    st.write(f"Issues: {quality.get('issues', [])}")
-                st.markdown("---")
-                if st.button("Generate realistic pseudo enquiry from TCO"):
-                    pseudo = call_backend(
-                        "POST",
-                        "/generate/pseudo_email",
-                        {
-                            "source": "tco",
-                            "tco": result.get("tco", {}),
-                            "persona": result.get("persona", {}),
-                            "next_questions": result.get("next_questions", {}),
-                            "evidence_source": "library",
-                            "n_snippets": 5,
-                            "enhanced": context_enhanced,
-                        },
-                        timeout=30,
-                    )
-                    pseudo_email = pseudo.get("pseudo_email", {})
-                    st.markdown("### Pseudo enquiry")
-                    st.write(f"**Subject:** {pseudo_email.get('subject', '')}")
-                    st.write(f"**From role:** {pseudo_email.get('from_role', '')}")
-                    st.write(f"**Tone:** {pseudo_email.get('tone', '')}")
-                    st.text_area(
-                        "Email body",
-                        value=pseudo_email.get("body", ""),
-                        height=260,
-                        disabled=True,
-                        key="tco_email_body",
-                    )
-                    st.markdown("### Evidence grounding")
-                    st.write(pseudo.get("inspired_by", ""))
-                    st.caption(
-                        f"Evidence method: {pseudo.get('evidence_method', 'patterns_only')}"
-                    )
-                    st.write(pseudo.get("evidence_snippets", []))
-                    email_quality = pseudo.get("quality_signals", {})
-                    if email_quality:
-                        st.markdown("### Quality signals")
-                        st.write(f"Used repair: {email_quality.get('used_repair', False)}")
-                        st.write(f"Used improve: {email_quality.get('used_improve', False)}")
-                        st.write(f"Issues: {email_quality.get('issues', [])}")
-        except requests.RequestException as exc:
-            st.error(f"Analyze failed: {format_backend_error(exc)}")
-
-with tabs[4]:
     st.subheader("Generate realistic pseudo enquiry")
     st.info("Synthetic / Exploratory — Not real user data")
     st.caption("Evidence snippets are anonymized inspiration (not verbatim).")
     pseudo_enhanced = st.toggle(
-        "ChatGPT-like synthesis (enhanced)",
+        "Enhanced LLM synthesis (more context-aware, slower)",
         value=True,
         key="pseudo_enhanced",
     )
     mode = st.radio(
         "Mode",
-        options=["From a single thread", "From themes/patterns"],
+        options=["From a single thread"],
         horizontal=True,
     )
     if mode == "From a single thread":
         pseudo_source_type = st.selectbox(
             "Thread source type",
             options=["auto", "plain", "email"],
+            key="pseudo_source_type",
         )
         pseudo_text = st.text_area(
             "Paste a single email thread",
@@ -510,6 +191,7 @@ with tabs[4]:
             "Evidence snippet source",
             options=["library", "uploaded", "none"],
             help="Uploaded uses sanitized snippets from this thread.",
+            key="evidence_source",
         )
         if st.button("Generate pseudo enquiry", key="generate_pseudo_enquiry_thread"):
             try:
@@ -606,6 +288,7 @@ with tabs[4]:
         theme_choice = st.selectbox(
             "Theme",
             options=theme_options if theme_options else ["No themes"],
+            key="theme_choice",
         )
         if st.button(
             "Generate pseudo enquiry from theme",
@@ -651,7 +334,7 @@ with tabs[4]:
             except requests.RequestException as exc:
                 st.error(f"Generate failed: {format_backend_error(exc)}")
 
-with tabs[5]:
+with tabs[2]:
     st.subheader("Pattern overview")
     st.caption("Themes are shown from aggregate counts; no raw text is displayed.")
     if st.button("Rebuild patterns"):
@@ -680,7 +363,7 @@ with tabs[5]:
     else:
         st.info("No themes available yet. Load data to see counts.")
 
-with tabs[6]:
+with tabs[3]:
     st.subheader("Generate synthetic context pack")
     st.caption("Outputs are synthetic and privacy-safe.")
     try:
@@ -705,8 +388,9 @@ with tabs[6]:
             if name != "No themes"
             else "No themes"
         ),
+        key="generate_theme",
     )
-    kind = st.selectbox("Kind", options=["enquiry", "persona", "scenario"])
+    kind = st.selectbox("Kind", options=["enquiry", "persona", "scenario"], key="generate_kind")
     count = st.slider("Count", min_value=1, max_value=10, value=5)
     k_threshold = get_k_threshold()
     if k_threshold is not None:
@@ -729,7 +413,7 @@ with tabs[6]:
                     "count": count,
                     "allow_below_threshold": True,
                 }
-                result = call_backend("POST", "/generate", payload)
+                result = call_backend("POST", "/generate", payload, timeout=60)
                 st.success("Generated synthetic outputs.")
                 st.write(result.get("disclaimer"))
                 if result.get("confidence"):
@@ -792,7 +476,7 @@ with tabs[6]:
             except requests.RequestException as exc:
                 st.error(f"Snippet extraction failed: {format_backend_error(exc)}")
 
-with tabs[7]:
+with tabs[4]:
     st.subheader("Export markdown")
     try:
         generated = call_backend("GET", "/generated").get("items", [])
@@ -815,7 +499,7 @@ with tabs[7]:
     else:
         st.info("No generated items available yet.")
 
-with tabs[8]:
+with tabs[5]:
     st.subheader("Audit log")
     try:
         audit = call_backend("GET", "/audit/recent").get("items", [])

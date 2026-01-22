@@ -344,7 +344,17 @@ def _ollama_generate_json(prompt: str) -> Dict[str, Any]:
 
 def _parse_json_payload(raw: str) -> Dict[str, Any] | None:
     if not raw:
-    return None
+        return None
+    
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = raw[start : end + 1]
+    try:
+        return json.loads(snippet)
+    except json.JSONDecodeError:
+        return None
 
 
 def _generate_pseudo_email_json(prompt: str) -> tuple[Dict[str, Any], bool]:
@@ -369,15 +379,6 @@ def _validate_pseudo_email(payload: Dict[str, Any]) -> Dict[str, Any] | None:
         validated = PseudoEmailModel.model_validate(payload)
         return validated.model_dump()
     except ValueError:
-        return None
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    snippet = raw[start : end + 1]
-    try:
-        return json.loads(snippet)
-    except json.JSONDecodeError:
         return None
 
 
@@ -466,10 +467,10 @@ def _build_pseudo_email_prompt(context: Dict[str, Any], style: str, n: int) -> s
 def _template_pseudo_emails(context: Dict[str, Any], n: int) -> List[Dict[str, Any]]:
     tco = context.get("tco", {})
     persona = context.get("persona", {})
-    subject = tco.get("goals", ["Permit enquiry update"])[0]
+    goals = tco.get("goals", []) or ["Permit enquiry update"]
+    subject = goals[0] if goals else "Permit enquiry update"
     from_role = tco.get("actor_role") or persona.get("from_role", "unknown")
     tone = tco.get("tone") or persona.get("tone", "neutral")
-    goals = tco.get("goals", []) or ["Clarify requirements and next steps."]
     constraints = tco.get("constraints", []) or ["Timeline pressure."]
     blockers = tco.get("blockers", []) or []
     decision_points = tco.get("decision_points", []) or []
