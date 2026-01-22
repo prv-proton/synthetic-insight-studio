@@ -46,9 +46,6 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS theme_counts (
                 theme TEXT PRIMARY KEY,
-                count_low INTEGER NOT NULL,
-                count_medium INTEGER NOT NULL,
-                count_high INTEGER NOT NULL,
                 count_total INTEGER NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -75,6 +72,31 @@ def init_db() -> None:
             )
             """
         )
+        _migrate_theme_counts(conn)
+
+
+def _migrate_theme_counts(conn: sqlite3.Connection) -> None:
+    cursor = conn.execute("PRAGMA table_info(theme_counts)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    if {"count_low", "count_medium", "count_high"}.issubset(columns):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS theme_counts_new (
+                theme TEXT PRIMARY KEY,
+                count_total INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO theme_counts_new (theme, count_total, updated_at)
+            SELECT theme, count_total, updated_at
+            FROM theme_counts
+            """
+        )
+        conn.execute("DROP TABLE theme_counts")
+        conn.execute("ALTER TABLE theme_counts_new RENAME TO theme_counts")
 
 
 def insert_enquiries(
@@ -143,11 +165,8 @@ def upsert_theme_counts(counts: Iterable[Dict[str, Any]]) -> None:
     payload = []
     for entry in counts:
         theme = entry["theme"]
-        count_low = int(entry.get("count_low", 0))
-        count_medium = int(entry.get("count_medium", 0))
-        count_high = int(entry.get("count_high", 0))
-        count_total = count_low + count_medium + count_high
-        payload.append((theme, count_low, count_medium, count_high, count_total, now))
+        count_total = int(entry.get("count_total", entry.get("count", 0)))
+        payload.append((theme, count_total, now))
     if not payload:
         return
     with _connect() as conn:
@@ -155,17 +174,11 @@ def upsert_theme_counts(counts: Iterable[Dict[str, Any]]) -> None:
             """
             INSERT INTO theme_counts (
                 theme,
-                count_low,
-                count_medium,
-                count_high,
                 count_total,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?)
             ON CONFLICT(theme) DO UPDATE SET
-                count_low = count_low + excluded.count_low,
-                count_medium = count_medium + excluded.count_medium,
-                count_high = count_high + excluded.count_high,
                 count_total = count_total + excluded.count_total,
                 updated_at = excluded.updated_at
             """,
@@ -181,9 +194,6 @@ def get_theme_counts() -> List[Dict[str, Any]]:
             results_by_theme[row["theme"]] = (
                 {
                     "theme": row["theme"],
-                    "count_low": row["count_low"],
-                    "count_medium": row["count_medium"],
-                    "count_high": row["count_high"],
                     "count_total": row["count_total"],
                 }
             )
@@ -196,9 +206,6 @@ def get_theme_counts() -> List[Dict[str, Any]]:
             results_by_theme[row["theme"]] = (
                 {
                     "theme": row["theme"],
-                    "count_low": count_total,
-                    "count_medium": 0,
-                    "count_high": 0,
                     "count_total": count_total,
                 }
             )
@@ -220,16 +227,10 @@ def get_theme_count(theme: str) -> Optional[Dict[str, Any]]:
             count_total = int(pattern.get("count_total") or pattern.get("count", 0))
             return {
                 "theme": theme,
-                "count_low": count_total,
-                "count_medium": 0,
-                "count_high": 0,
                 "count_total": count_total,
             }
         return {
             "theme": row["theme"],
-            "count_low": row["count_low"],
-            "count_medium": row["count_medium"],
-            "count_high": row["count_high"],
             "count_total": row["count_total"],
         }
 

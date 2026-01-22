@@ -3,9 +3,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     db_path: str = "/data/app.db"
-    store_raw: bool = True
+    store_raw: bool = False
     k_threshold: int = 10
-    high_dominant_ratio: float = 0.5
     llm_provider: str = "ollama"
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen2:1.5b"
