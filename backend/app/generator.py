@@ -1,11 +1,20 @@
 import json
 import re
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import requests
 
 from .config import settings
+from .email_thread import redact_uniform
+from .llm_client import generate_json
 from .pii import detect_pii, redact
+from .prompts import (
+    build_json_repair_prompt,
+    build_pseudo_email_prompt,
+    build_quality_improve_prompt,
+)
+from .quality import evaluate_pseudo_email
+from .schemas import PseudoEmailModel
 
 
 DISCLAIMER = "Synthetic / Exploratory — Not real user data"
@@ -212,14 +221,14 @@ def _generate_with_guardrails(prompt: str, kind: str, theme: str, pattern: Dict[
 
 
 def generate_pseudo_enquiries(theme: str, pattern: Dict[str, object], n: int) -> List[str]:
-    prompt = (
-        f"Generate {n} synthetic user enquiries based on this theme and pattern.\n"
-        f"Theme: {theme}\n"
-        f"Pattern JSON: {json.dumps(pattern)}\n"
-        "Rules: No names, no IDs, no dates, no locations, synthetic only.\n"
-        "Return as bullet points."
-    )
-    return _generate_with_guardrails(prompt, "enquiry", theme, pattern, n)
+    context = _context_from_pattern(theme, pattern)
+    emails = generate_pseudo_thread_first_email(context, style="permit_housing", n=n)
+    rendered: List[str] = []
+    for email in emails:
+        subject = email.get("subject", "Subject: Permit enquiry")
+        body = email.get("body", "")
+        rendered.append(f"Subject: {subject}\n\n{body}")
+    return rendered
 
 
 def generate_personas(theme: str, pattern: Dict[str, object], n: int) -> List[str]:
@@ -250,3 +259,294 @@ def wrap_output(kind: str, items: List[str]) -> Dict[str, object]:
         "items": items,
         "disclaimer": DISCLAIMER,
     }
+
+
+PLACEHOLDER_TOKENS = [
+    "[NAME]",
+    "[EMAIL]",
+    "[PHONE]",
+    "[ADDRESS]",
+    "[PARCEL_ID]",
+    "[FILE_NO]",
+    "[ATTACHMENT]",
+    "[DATE]",
+]
+
+
+def generate_pseudo_thread_first_email(
+    context: Dict[str, Any],
+    style: str = "permit_housing",
+    n: int = 1,
+) -> List[Dict[str, Any]]:
+    prompt = _build_pseudo_email_prompt(context, style=style, n=n)
+    try:
+        if settings.llm_provider.lower() == "ollama":
+            response = _ollama_generate_json(prompt)
+            emails = _coerce_email_list(response, n)
+        else:
+            emails = _template_pseudo_emails(context, n)
+    except requests.RequestException:
+        emails = _template_pseudo_emails(context, n)
+
+    processed: List[Dict[str, Any]] = []
+    for email in emails:
+        cleaned = _sanitize_pseudo_email(email)
+        processed.append(cleaned)
+    return processed
+
+
+def generate_high_fidelity_pseudo_email(
+    context_json: Dict[str, Any],
+    style: str = "permit_housing",
+    enhanced: bool = True,
+) -> Dict[str, Any]:
+    prompt = build_pseudo_email_prompt(context_json, style=style)
+    draft, used_repair = _generate_pseudo_email_json(prompt)
+    validated = _validate_pseudo_email(draft)
+    if validated is None:
+        validated = _template_pseudo_emails(context_json, 1)[0]
+    issues = evaluate_pseudo_email(validated)
+    used_improve = False
+    if enhanced and issues:
+        improved_prompt = build_quality_improve_prompt(validated, context_json)
+        improved, used_repair_2 = _generate_pseudo_email_json(improved_prompt)
+        improved_validated = _validate_pseudo_email(improved)
+        if improved_validated:
+            validated = improved_validated
+            used_repair = used_repair or used_repair_2
+            used_improve = True
+            issues = evaluate_pseudo_email(validated)
+    cleaned = _sanitize_pseudo_email(validated)
+    cleaned["quality_signals"] = {
+        "issues": issues,
+        "used_repair": used_repair,
+        "used_improve": used_improve,
+    }
+    return cleaned
+
+
+def _ollama_generate_json(prompt: str) -> Dict[str, Any]:
+    response = requests.post(
+        f"{settings.ollama_url}/api/generate",
+        json={
+            "model": settings.ollama_model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.3},
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    raw = payload.get("response", "").strip()
+    return _parse_json_payload(raw) or {}
+
+
+def _parse_json_payload(raw: str) -> Dict[str, Any] | None:
+    if not raw:
+    return None
+
+
+def _generate_pseudo_email_json(prompt: str) -> tuple[Dict[str, Any], bool]:
+    used_repair = False
+    payload = generate_json(prompt, temperature=0.7, top_p=0.9, num_predict=1000)
+    raw = payload.get("response", "").strip()
+    parsed = _parse_json_payload(raw) or {}
+    if parsed:
+        return parsed, used_repair
+    repair_prompt = build_json_repair_prompt(raw, _pseudo_email_schema_hint())
+    payload = generate_json(repair_prompt, temperature=0.4, top_p=0.9, num_predict=800)
+    raw = payload.get("response", "").strip()
+    parsed = _parse_json_payload(raw) or {}
+    used_repair = True
+    return parsed, used_repair
+
+
+def _validate_pseudo_email(payload: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not payload:
+        return None
+    try:
+        validated = PseudoEmailModel.model_validate(payload)
+        return validated.model_dump()
+    except ValueError:
+        return None
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = raw[start : end + 1]
+    try:
+        return json.loads(snippet)
+    except json.JSONDecodeError:
+        return None
+
+
+def _coerce_email_list(data: Dict[str, Any], n: int) -> List[Dict[str, Any]]:
+    emails = []
+    if isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
+        items = data["items"]
+    elif isinstance(data, dict):
+        items = [data]
+    else:
+        items = []
+    for item in items[:n]:
+        emails.append(_coerce_email_item(item))
+    if len(emails) < n:
+        emails.extend([_coerce_email_item({}) for _ in range(n - len(emails))])
+    return emails
+
+
+def _coerce_email_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "subject": str(item.get("subject", "Permit enquiry update")).strip(),
+        "from_role": str(item.get("from_role", "unknown")).strip(),
+        "tone": str(item.get("tone", "neutral")).strip(),
+        "body": str(item.get("body", "")).strip(),
+        "attachments_mentioned": item.get("attachments_mentioned", []) or [],
+        "placeholders_used": item.get("placeholders_used", []) or [],
+    }
+
+
+def _sanitize_pseudo_email(email: Dict[str, Any]) -> Dict[str, Any]:
+    subject = str(email.get("subject", "")).strip()
+    body = str(email.get("body", "")).strip()
+    redacted_subject, _ = redact_uniform(subject)
+    redacted_body, _ = redact_uniform(body)
+    placeholders_used = _extract_placeholders(redacted_subject + " " + redacted_body)
+    attachments = email.get("attachments_mentioned", []) or []
+    if "[ATTACHMENT]" in redacted_body and "[ATTACHMENT]" not in attachments:
+        attachments = attachments + ["[ATTACHMENT]"]
+    from_role = email.get("from_role", "unknown")
+    tone = email.get("tone", "neutral")
+    if detect_pii(redacted_body):
+        redacted_body, _ = redact(redacted_body)
+    return {
+        "subject": redacted_subject or "Permit enquiry update",
+        "from_role": from_role,
+        "tone": tone,
+        "body": redacted_body,
+        "attachments_mentioned": attachments,
+        "placeholders_used": placeholders_used,
+    }
+
+
+def _extract_placeholders(text: str) -> List[str]:
+    return [token for token in PLACEHOLDER_TOKENS if token in text]
+
+
+def _build_pseudo_email_prompt(context: Dict[str, Any], style: str, n: int) -> str:
+    context_json = json.dumps(context, ensure_ascii=False)
+    return (
+        f"Generate {n} synthetic first-email messages for a permitting thread.\n"
+        f"Style: {style}\n"
+        "Rules:\n"
+        "- Output JSON only.\n"
+        "- Never include real names/emails/phones/addresses.\n"
+        "- Use placeholders: [NAME], [EMAIL], [PHONE], [ADDRESS], [PARCEL_ID], "
+        "[FILE_NO], [ATTACHMENT], [DATE].\n"
+        "- Include motivations, constraints, and decision points in narrative form.\n"
+        "Schema:\n"
+        "{\n"
+        '  "items": [\n'
+        "    {\n"
+        '      "subject": str,\n'
+        '      "from_role": "homeowner|developer|consultant|unknown",\n'
+        '      "tone": "urgent|anxious|frustrated|neutral",\n'
+        '      "body": str,\n'
+        '      "attachments_mentioned": [str],\n'
+        '      "placeholders_used": [str]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        f"Context JSON:\n{context_json}\n"
+        "Return JSON only."
+    )
+
+
+def _template_pseudo_emails(context: Dict[str, Any], n: int) -> List[Dict[str, Any]]:
+    tco = context.get("tco", {})
+    persona = context.get("persona", {})
+    subject = tco.get("goals", ["Permit enquiry update"])[0]
+    from_role = tco.get("actor_role") or persona.get("from_role", "unknown")
+    tone = tco.get("tone") or persona.get("tone", "neutral")
+    goals = tco.get("goals", []) or ["Clarify requirements and next steps."]
+    constraints = tco.get("constraints", []) or ["Timeline pressure."]
+    blockers = tco.get("blockers", []) or []
+    decision_points = tco.get("decision_points", []) or []
+    tried = tco.get("what_they_tried", []) or ["Submitted the latest materials."]
+    asking = tco.get("what_they_are_asking", []) or ["Confirm next steps and remaining items."]
+    attachments = tco.get("attachments_mentioned", []) or ["[ATTACHMENT]"]
+
+    base_body = (
+        "Hello,\n\n"
+        f"I'm reaching out regarding a permitting request tied to [ADDRESS] and file [FILE_NO]. "
+        f"Our team is trying to move forward but we're facing constraints like {', '.join(constraints[:2])}. "
+        f"Primary goals include {', '.join(goals[:2])}.\n\n"
+        f"What we've tried so far: {', '.join(tried[:2])}. "
+        f"Pending items include {', '.join(blockers[:2]) or 'review feedback and approval timing'}. "
+        f"Key decision points are {', '.join(decision_points[:2]) or 'confirming requirements and sequencing'}.\n\n"
+        f"What we're asking: {', '.join(asking[:2])}. "
+        "We can share updated materials if needed.\n\n"
+        f"Attachments mentioned: {', '.join(attachments[:2])}\n\n"
+        f"Thanks,\nA {from_role} applicant"
+    )
+
+    emails = []
+    for _ in range(n):
+        emails.append(
+            {
+                "subject": subject,
+                "from_role": from_role,
+                "tone": tone,
+                "body": base_body,
+                "attachments_mentioned": attachments,
+                "placeholders_used": _extract_placeholders(base_body + subject),
+            }
+        )
+    return emails
+
+
+def _context_from_pattern(theme: str, pattern: Dict[str, Any]) -> Dict[str, Any]:
+    top_terms = _clean_terms(pattern.get("top_terms", []))
+    phrases = _clean_terms(pattern.get("common_phrases", []))
+    tco = {
+        "stage": "in_review",
+        "actor_role": "unknown",
+        "tone": "neutral",
+        "goals": top_terms[:3] or ["Clarify review requirements."],
+        "constraints": phrases[:2] or ["Timeline pressure."],
+        "blockers": phrases[2:4] or [],
+        "decision_points": ["Confirm requirements", "Agree on next steps"],
+        "what_they_tried": ["Submitted initial materials."],
+        "what_they_are_asking": ["Confirm remaining items and timelines."],
+        "attachments_mentioned": ["[ATTACHMENT]"],
+        "agencies_or_roles": ["Planning"],
+        "timeline_signals": ["[DATE]"],
+    }
+    return {
+        "tco": tco,
+        "persona": {
+            "persona_name": "Focused applicant",
+            "from_role": "unknown",
+            "experience_level": "medium",
+            "primary_motivation": "Move the permit forward",
+            "frustrations": [],
+            "needs": tco["goals"],
+            "tone": "neutral",
+        },
+    }
+
+
+def _pseudo_email_schema_hint() -> str:
+    return (
+        "{\n"
+        '  "subject": str,\n'
+        '  "from_role": "homeowner|developer|consultant|unknown",\n'
+        '  "tone": "urgent|anxious|frustrated|neutral|unknown",\n'
+        '  "body": str,\n'
+        '  "attachments_mentioned": [str],\n'
+        '  "motivations": [str],\n'
+        '  "decision_points": [str],\n'
+        '  "assumptions": [str]\n'
+        "}"
+    )

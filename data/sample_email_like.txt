@@ -1,0 +1,16 @@
+Subject: Request for permit status on [[PII:FILE_NO]] DP-24-1682
+
+Hi team,
+
+I am following up on the review status for the project at [[PII:ADDRESS]] 1186 Cedar Ridge Ave, Victoria, BC. We are trying to coordinate a revised site plan and need clarity on the remaining items. Timeline is tight and we are aiming for approval within 6 weeks.
+
+Attachments mentioned: [[SENSITIVE:ATTACHMENT]] site-plan-v3.pdf
+
+Thanks,
+[[PII:NAME]] Naixin Wu
+[[PII:EMAIL]] naixin.wu@example.ca
+
+On Mar 12, 2025 at 9:14 AM, Planning Navigator <[[PII:EMAIL]] navigator@city.example.ca> wrote:
+> Hello [[PII:NAME]] Naixin,
+> We still need a stormwater plan update and confirmation of easement scope.
+> Please see the checklist attached.
