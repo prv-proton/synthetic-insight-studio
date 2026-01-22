@@ -32,7 +32,7 @@ The stack will start Ollama and pull `qwen2:1.5b` by default.
 2. **Load data** → click **Load seed dataset**.
 3. **Pattern overview** → click **Rebuild patterns**.
 4. **Generate context pack** → pick a theme and generate enquiries/personas/scenarios.
-5. **Export markdown** → download the synthetic export.
+5. **Sanitize (Preview)** → upload a sample file to review masked text.
 
 ## Environment variables
 
@@ -72,7 +72,7 @@ Use `POST /sanitize` to preview masked content when you only have a few examples
 
 This mode **does not** classify, store, or generate. It returns the same text with sensitive values masked for review, along with redaction stats and normalization details.
 
-### Tagged thread demo
+### Sanitize preview demo
 
 1. Open the UI **Sanitize (Preview)** tab.
 2. Upload `data/tagged_threads_sample.txt`.
