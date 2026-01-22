@@ -19,33 +19,6 @@ class ThemeSummary(BaseModel):
     meets_k: bool
 
 
-class ThreadContext(BaseModel):
-    stage: str
-    actor_role: str
-    tone: str
-    goals: List[str]
-    constraints: List[str]
-    blockers: List[str]
-    decision_points: List[str]
-    what_they_tried: List[str]
-    what_they_are_asking: List[str]
-    attachments_mentioned: List[str]
-    agencies_or_roles: List[str]
-    timeline_signals: List[str]
-
-
-class ThreadSummary(BaseModel):
-    one_sentence: str
-    stage: str
-    goals: List[str]
-    constraints: List[str]
-    blockers: List[str]
-    decision_points: List[str]
-    attachments_mentioned: List[str]
-    agencies_or_roles: List[str]
-    timeline_signals: List[str]
-
-
 class Persona(BaseModel):
     persona_name: str
     from_role: str
@@ -56,23 +29,6 @@ class Persona(BaseModel):
     tone: str
 
 
-class NextQuestions(BaseModel):
-    to_clarify: List[str]
-    to_unblock: List[str]
-    risks_if_ignored: List[str]
-
-
-class PseudoEmailModel(BaseModel):
-    subject: str
-    from_role: str
-    tone: str
-    body: str
-    attachments_mentioned: List[str]
-    motivations: List[str]
-    decision_points: List[str]
-    assumptions: List[str]
-
-
 class PatternResponse(BaseModel):
     theme: str
     pattern: Dict[str, Any]
@@ -81,7 +37,6 @@ class PatternResponse(BaseModel):
 
 class GenerateRequest(BaseModel):
     theme: str
-    kind: str
     count: int = 5
     allow_below_threshold: bool = True
 
