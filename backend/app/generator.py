@@ -401,26 +401,28 @@ def _build_pseudo_email_prompt(context: Dict[str, Any], style: str, n: int) -> s
 
 
 def _template_pseudo_emails(context: Dict[str, Any], n: int) -> List[Dict[str, Any]]:
-    summary = context.get("thread_summary", {})
+    tco = context.get("tco", {})
     persona = context.get("persona", {})
-    subject = summary.get("one_sentence", "Permit enquiry update")
-    from_role = persona.get("from_role", "unknown")
-    tone = persona.get("tone", "neutral")
-    goals = summary.get("goals", []) or ["Clarify requirements and next steps."]
-    constraints = summary.get("constraints", []) or ["Timeline pressure."]
-    blockers = summary.get("blockers", []) or []
-    decision_points = summary.get("decision_points", []) or []
-    attachments = summary.get("attachments_mentioned", []) or ["[ATTACHMENT]"]
+    subject = tco.get("goals", ["Permit enquiry update"])[0]
+    from_role = tco.get("actor_role") or persona.get("from_role", "unknown")
+    tone = tco.get("tone") or persona.get("tone", "neutral")
+    goals = tco.get("goals", []) or ["Clarify requirements and next steps."]
+    constraints = tco.get("constraints", []) or ["Timeline pressure."]
+    blockers = tco.get("blockers", []) or []
+    decision_points = tco.get("decision_points", []) or []
+    tried = tco.get("what_they_tried", []) or ["Submitted the latest materials."]
+    asking = tco.get("what_they_are_asking", []) or ["Confirm next steps and remaining items."]
+    attachments = tco.get("attachments_mentioned", []) or ["[ATTACHMENT]"]
 
     base_body = (
         "Hello,\n\n"
         f"I'm reaching out regarding a permitting request tied to [ADDRESS] and file [FILE_NO]. "
         f"Our team is trying to move forward but we're facing constraints like {', '.join(constraints[:2])}. "
         f"Primary goals include {', '.join(goals[:2])}.\n\n"
-        "So far we've submitted the latest materials and are waiting on confirmation of next steps. "
+        f"What we've tried so far: {', '.join(tried[:2])}. "
         f"Pending items include {', '.join(blockers[:2]) or 'review feedback and approval timing'}. "
         f"Key decision points are {', '.join(decision_points[:2]) or 'confirming requirements and sequencing'}.\n\n"
-        "Could you confirm what is still needed and whether any additional steps are required? "
+        f"What we're asking: {', '.join(asking[:2])}. "
         "We can share updated materials if needed.\n\n"
         f"Attachments mentioned: {', '.join(attachments[:2])}\n\n"
         f"Thanks,\nA {from_role} applicant"
@@ -444,31 +446,29 @@ def _template_pseudo_emails(context: Dict[str, Any], n: int) -> List[Dict[str, A
 def _context_from_pattern(theme: str, pattern: Dict[str, Any]) -> Dict[str, Any]:
     top_terms = _clean_terms(pattern.get("top_terms", []))
     phrases = _clean_terms(pattern.get("common_phrases", []))
-    summary = {
-        "one_sentence": f"{theme} enquiry about {', '.join(top_terms[:2]) or 'requirements'}",
+    tco = {
         "stage": "in_review",
+        "actor_role": "unknown",
+        "tone": "neutral",
         "goals": top_terms[:3] or ["Clarify review requirements."],
         "constraints": phrases[:2] or ["Timeline pressure."],
         "blockers": phrases[2:4] or [],
         "decision_points": ["Confirm requirements", "Agree on next steps"],
+        "what_they_tried": ["Submitted initial materials."],
+        "what_they_are_asking": ["Confirm remaining items and timelines."],
         "attachments_mentioned": ["[ATTACHMENT]"],
         "agencies_or_roles": ["Planning"],
         "timeline_signals": ["[DATE]"],
     }
     return {
-        "thread_summary": summary,
+        "tco": tco,
         "persona": {
             "persona_name": "Focused applicant",
             "from_role": "unknown",
             "experience_level": "medium",
             "primary_motivation": "Move the permit forward",
             "frustrations": [],
-            "needs": summary["goals"],
+            "needs": tco["goals"],
             "tone": "neutral",
-        },
-        "next_questions": {
-            "to_clarify": ["What steps remain?"],
-            "to_unblock": ["Is any document missing?"],
-            "risks_if_ignored": ["Timeline may slip."],
         },
     }

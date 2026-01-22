@@ -24,7 +24,7 @@ from .schemas import (
     OllamaStatus,
     ResetResponse,
     SettingsResponse,
-    ThreadAnalysis,
+    ThreadContext,
     ThemeSummary,
 )
 from .storage import (
@@ -107,7 +107,7 @@ async def analyze_thread(
     files: List[UploadFile] | None = File(default=None),
 ) -> Dict[str, object]:
     text, source_type = await _get_thread_payload(request, files)
-    analysis, redacted_latest, meta, stats, turns_count = _analyze_thread_text(
+    tco, persona, next_questions, redacted_latest, meta, stats, turns_count = _analyze_thread_text(
         text,
         source_type,
     )
@@ -124,9 +124,11 @@ async def analyze_thread(
 
     return {
         "latest_message_redacted": redacted_latest,
-        "analysis": analysis,
+        "tco": tco,
+        "persona": persona,
+        "next_questions": next_questions,
         "meta": meta,
-        "turns_count": turns_count,
+        "turns_redacted_count": turns_count,
     }
 
 
@@ -153,8 +155,19 @@ async def generate_pseudo_email(request: Request) -> Dict[str, object]:
     if source == "thread_analyze":
         if not isinstance(thread_text, str) or not thread_text.strip():
             raise HTTPException(status_code=400, detail="thread_text is required")
-        analysis, _, _, _, _ = _analyze_thread_text(thread_text, "auto")
-        context = analysis
+        tco, persona, next_questions, _, _, _, _ = _analyze_thread_text(thread_text, "auto")
+        analysis = {"tco": tco, "persona": persona, "next_questions": next_questions}
+        context = {"tco": tco, "persona": persona, "next_questions": next_questions}
+    elif source == "tco":
+        tco = payload.get("tco")
+        if not isinstance(tco, dict):
+            raise HTTPException(status_code=400, detail="tco is required")
+        validated = ThreadContext.model_validate(tco)
+        context = {
+            "tco": validated.model_dump(),
+            "persona": payload.get("persona") or {},
+            "next_questions": payload.get("next_questions") or {},
+        }
     elif source == "patterns":
         if not theme:
             raise HTTPException(status_code=400, detail="theme is required")
@@ -164,7 +177,7 @@ async def generate_pseudo_email(request: Request) -> Dict[str, object]:
         pattern = pattern_entry["pattern"]
         context = _context_from_pattern(theme, pattern)
     else:
-        raise HTTPException(status_code=400, detail="source must be thread_analyze or patterns")
+        raise HTTPException(status_code=400, detail="source must be thread_analyze, tco, or patterns")
 
     pseudo_emails = generate_pseudo_thread_first_email(context, style=style, n=1)
     pseudo_email = pseudo_emails[0] if pseudo_emails else {}
@@ -433,7 +446,14 @@ async def _get_thread_payload(
 def _analyze_thread_text(
     text: str,
     source_type: str,
-) -> tuple[Dict[str, object], str, Dict[str, object], Dict[str, object], int]:
+) -> tuple[
+    Dict[str, object],
+    Dict[str, object],
+    Dict[str, object],
+    str,
+    Dict[str, object],
+    int,
+]:
     normalized = _normalize_thread_input(text, source_type)
     cleaned_full = normalized["cleaned_full"]
     latest_message = normalized["latest_message"]
@@ -444,16 +464,17 @@ def _analyze_thread_text(
     turns = split_thread_into_turns(cleaned_full)
     redacted_turns = _redact_turns(turns)
 
-    heuristic = _build_heuristic_analysis(
+    tco_heuristic = _build_tco_heuristic(
         redacted_latest,
         redacted_full,
         meta,
         redacted_turns,
     )
-    analysis = _refine_with_ollama(heuristic, redacted_latest, redacted_turns)
-    analysis = _sanitize_analysis_output(analysis)
+    tco = _refine_tco_with_ollama(tco_heuristic, redacted_latest, redacted_turns)
+    tco = _sanitize_tco_output(tco)
+    persona, next_questions = _build_persona_and_questions(tco, redacted_latest)
     stats = {"latest": latest_stats, "full": full_stats}
-    return analysis, redacted_latest[:400], meta, stats, len(redacted_turns)
+    return tco, persona, next_questions, redacted_latest[:400], meta, stats, len(redacted_turns)
 
 
 def _infer_sanitize_source_type(text: str, source_type: str) -> str:
@@ -514,9 +535,9 @@ def _resolve_evidence_snippets(
 
 
 def _build_inspired_by(context: Dict[str, object]) -> str:
-    summary = context.get("thread_summary", {}) if isinstance(context, dict) else {}
-    blockers = summary.get("blockers", []) or []
-    constraints = summary.get("constraints", []) or []
+    tco = context.get("tco", {}) if isinstance(context, dict) else {}
+    blockers = tco.get("blockers", []) or []
+    constraints = tco.get("constraints", []) or []
     signals = ", ".join(blockers[:2] + constraints[:2])
     return f"Inspired by common patterns: {signals or 'standard permitting guidance.'}"
 
@@ -524,26 +545,29 @@ def _build_inspired_by(context: Dict[str, object]) -> str:
 def _context_from_pattern(theme: str, pattern: Dict[str, object]) -> Dict[str, object]:
     top_terms = pattern.get("top_terms", []) or []
     phrases = pattern.get("common_phrases", []) or []
-    summary = {
-        "one_sentence": f"{theme} enquiry about requirements",
+    tco = {
         "stage": "in_review",
+        "actor_role": "unknown",
+        "tone": "neutral",
         "goals": top_terms[:3] or ["Clarify requirements."],
         "constraints": phrases[:2] or ["Timeline pressure."],
         "blockers": phrases[2:4] or [],
         "decision_points": ["Confirm requirements", "Agree on next steps"],
+        "what_they_tried": ["Submitted initial materials."],
+        "what_they_are_asking": ["Confirm remaining items and timelines."],
         "attachments_mentioned": ["[ATTACHMENT]"],
         "agencies_or_roles": ["Planning"],
         "timeline_signals": ["[DATE]"],
     }
     return {
-        "thread_summary": summary,
+        "tco": tco,
         "persona": {
             "persona_name": "Focused applicant",
             "from_role": "unknown",
             "experience_level": "medium",
             "primary_motivation": "Move the permit forward",
             "frustrations": [],
-            "needs": summary["goals"],
+            "needs": tco["goals"],
             "tone": "neutral",
         },
         "next_questions": {
@@ -614,14 +638,13 @@ def _redact_turns(turns: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return redacted_turns
 
 
-def _build_heuristic_analysis(
+def _build_tco_heuristic(
     latest_message: str,
     full_text: str,
     meta: Dict[str, object],
     turns: List[Dict[str, str]],
 ) -> Dict[str, object]:
     base_text = latest_message or full_text
-    subject = meta.get("subject") if isinstance(meta, dict) else None
 
     goals = _extract_sentences(base_text, ["need", "request", "looking for", "seeking", "want"])
     constraints = _extract_sentences(
@@ -636,6 +659,14 @@ def _build_heuristic_analysis(
         base_text,
         ["decide", "approval", "determine", "confirm", "sign off"],
     )
+    what_they_tried = _extract_sentences(
+        base_text,
+        ["submitted", "uploaded", "shared", "provided", "tried", "completed"],
+    )
+    what_they_are_asking = _extract_sentences(
+        base_text,
+        ["can you", "could you", "please", "confirm", "clarify", "advise", "request"],
+    )
 
     attachments = []
     if "[ATTACHMENT]" in full_text or "attach" in full_text.lower():
@@ -644,55 +675,66 @@ def _build_heuristic_analysis(
     agencies_or_roles = _extract_agencies(full_text)
     timeline_signals = _extract_timeline_signals(full_text)
     stage = _infer_stage(full_text)
-
-    from_role = _infer_role(full_text)
-    experience_level = _infer_experience(full_text)
+    actor_role = _infer_role(full_text)
     tone = _infer_tone(base_text)
-    primary_motivation = (
-        goals[0] if goals else "Clarity on requirements and next steps."
-    )
 
+    return {
+        "stage": stage,
+        "actor_role": actor_role,
+        "tone": tone,
+        "goals": goals,
+        "constraints": constraints,
+        "blockers": blockers,
+        "decision_points": decision_points,
+        "what_they_tried": what_they_tried,
+        "what_they_are_asking": what_they_are_asking,
+        "attachments_mentioned": attachments,
+        "agencies_or_roles": agencies_or_roles,
+        "timeline_signals": timeline_signals,
+    }
+
+
+def _build_persona_and_questions(
+    tco: Dict[str, object],
+    base_text: str,
+) -> tuple[Dict[str, object], Dict[str, object]]:
+    goals = tco.get("goals", []) if isinstance(tco, dict) else []
+    constraints = tco.get("constraints", []) if isinstance(tco, dict) else []
+    blockers = tco.get("blockers", []) if isinstance(tco, dict) else []
+    agencies = tco.get("agencies_or_roles", []) if isinstance(tco, dict) else []
+    attachments = tco.get("attachments_mentioned", []) if isinstance(tco, dict) else []
+    timeline_signals = tco.get("timeline_signals", []) if isinstance(tco, dict) else []
+    from_role = tco.get("actor_role", "unknown")
+    tone = tco.get("tone", "neutral")
+    experience_level = _infer_experience(base_text)
+    primary_motivation = goals[0] if goals else "Clarity on requirements and next steps."
     frustrations = blockers[:3] if blockers else _extract_sentences(
         base_text, ["frustrated", "confusing", "unclear", "delay"]
     )
     needs = goals[:4] if goals else ["Guidance on requirements and sequencing."]
-
-    heuristic = {
-        "thread_summary": {
-            "one_sentence": subject or _one_sentence_summary(base_text),
-            "stage": stage,
-            "goals": goals,
-            "constraints": constraints,
-            "blockers": blockers,
-            "decision_points": decision_points,
-            "attachments_mentioned": attachments,
-            "agencies_or_roles": agencies_or_roles,
-            "timeline_signals": timeline_signals,
-        },
-        "persona": {
-            "persona_name": _build_persona_name(from_role, tone),
-            "from_role": from_role,
-            "experience_level": experience_level,
-            "primary_motivation": primary_motivation,
-            "frustrations": frustrations,
-            "needs": needs,
-            "tone": tone,
-        },
-        "next_questions": {
-            "to_clarify": _build_next_questions(goals, constraints, agencies_or_roles),
-            "to_unblock": _build_unblock_questions(blockers, attachments),
-            "risks_if_ignored": _build_risk_questions(blockers, timeline_signals),
-        },
+    persona = {
+        "persona_name": _build_persona_name(from_role, tone),
+        "from_role": from_role,
+        "experience_level": experience_level,
+        "primary_motivation": primary_motivation,
+        "frustrations": frustrations,
+        "needs": needs,
+        "tone": tone,
     }
-    return heuristic
+    next_questions = {
+        "to_clarify": _build_next_questions(goals, constraints, agencies),
+        "to_unblock": _build_unblock_questions(blockers, attachments),
+        "risks_if_ignored": _build_risk_questions(blockers, timeline_signals),
+    }
+    return persona, next_questions
 
 
-def _refine_with_ollama(
+def _refine_tco_with_ollama(
     heuristic: Dict[str, object],
     latest_message: str,
     turns: List[Dict[str, str]],
 ) -> Dict[str, object]:
-    prompt = _build_thread_prompt(heuristic, latest_message, turns)
+    prompt = _build_tco_prompt(heuristic, latest_message, turns)
     try:
         if settings.llm_provider.lower() != "ollama":
             return heuristic
@@ -712,7 +754,7 @@ def _refine_with_ollama(
         data = _parse_json_payload(raw)
         if data is None:
             return heuristic
-        validated = ThreadAnalysis.model_validate(data)
+        validated = ThreadContext.model_validate(data)
         return validated.model_dump()
     except requests.RequestException:
         return heuristic
@@ -720,10 +762,10 @@ def _refine_with_ollama(
         return heuristic
 
 
-def _sanitize_analysis_output(analysis: Dict[str, object]) -> Dict[str, object]:
-    sanitized = _redact_object_strings(analysis)
-    coerced = _coerce_analysis_schema(sanitized)
-    validated = ThreadAnalysis.model_validate(coerced)
+def _sanitize_tco_output(tco: Dict[str, object]) -> Dict[str, object]:
+    sanitized = _redact_object_strings(tco)
+    coerced = _coerce_tco_schema(sanitized)
+    validated = ThreadContext.model_validate(coerced)
     return validated.model_dump()
 
 
@@ -935,7 +977,7 @@ def _build_risk_questions(blockers: List[str], timeline: List[str]) -> List[str]
     return questions[:3]
 
 
-def _build_thread_prompt(
+def _build_tco_prompt(
     heuristic: Dict[str, object],
     latest_message: str,
     turns: List[Dict[str, str]],
@@ -943,36 +985,23 @@ def _build_thread_prompt(
     turns_preview = json.dumps(turns[:6], ensure_ascii=False)
     heuristic_json = json.dumps(heuristic, ensure_ascii=False)
     return (
-        "You are refining a redacted email thread analysis.\n"
+        "You are refining a redacted email thread context object.\n"
         "Rules: NEVER output real names/emails/phones/addresses. Keep tokens like "
         "[ADDRESS], [FILE_NO], [PARCEL_ID], [ATTACHMENT], [DATE].\n"
         "Return STRICT JSON only, matching this schema:\n"
         "{\n"
-        '  "thread_summary": {\n'
-        '    "one_sentence": str,\n'
-        '    "stage": "early_inquiry|in_review|conflict_resolution|closeout|expedite|unknown",\n'
-        '    "goals": [str],\n'
-        '    "constraints": [str],\n'
-        '    "blockers": [str],\n'
-        '    "decision_points": [str],\n'
-        '    "attachments_mentioned": [str],\n'
-        '    "agencies_or_roles": [str],\n'
-        '    "timeline_signals": [str]\n'
-        "  },\n"
-        '  "persona": {\n'
-        '    "persona_name": str,\n'
-        '    "from_role": "homeowner|developer|consultant|unknown",\n'
-        '    "experience_level": "low|medium|high",\n'
-        '    "primary_motivation": str,\n'
-        '    "frustrations": [str],\n'
-        '    "needs": [str],\n'
-        '    "tone": "anxious|frustrated|neutral|urgent|unknown"\n'
-        "  },\n"
-        '  "next_questions": {\n'
-        '    "to_clarify": [str],\n'
-        '    "to_unblock": [str],\n'
-        '    "risks_if_ignored": [str]\n'
-        "  }\n"
+        '  "stage": "early_inquiry|in_review|conflict_resolution|closeout|expedite|unknown",\n'
+        '  "actor_role": "homeowner|developer|consultant|unknown",\n'
+        '  "tone": "anxious|frustrated|neutral|urgent|unknown",\n'
+        '  "goals": [str],\n'
+        '  "constraints": [str],\n'
+        '  "blockers": [str],\n'
+        '  "decision_points": [str],\n'
+        '  "what_they_tried": [str],\n'
+        '  "what_they_are_asking": [str],\n'
+        '  "attachments_mentioned": [str],\n'
+        '  "agencies_or_roles": [str],\n'
+        '  "timeline_signals": [str]\n'
         "}\n"
         f"Latest redacted message:\n{latest_message}\n"
         f"Thread turns (redacted preview):\n{turns_preview}\n"
@@ -1006,12 +1035,8 @@ def _redact_object_strings(value: object) -> object:
     return value
 
 
-def _coerce_analysis_schema(data: Dict[str, object]) -> Dict[str, object]:
-    summary = data.get("thread_summary", {}) if isinstance(data, dict) else {}
-    persona = data.get("persona", {}) if isinstance(data, dict) else {}
-    next_questions = data.get("next_questions", {}) if isinstance(data, dict) else {}
-
-    stage = _coerce_enum(summary.get("stage"), {
+def _coerce_tco_schema(data: Dict[str, object]) -> Dict[str, object]:
+    stage = _coerce_enum(data.get("stage"), {
         "early_inquiry",
         "in_review",
         "conflict_resolution",
@@ -1019,39 +1044,27 @@ def _coerce_analysis_schema(data: Dict[str, object]) -> Dict[str, object]:
         "expedite",
         "unknown",
     })
-    role = _coerce_enum(
-        persona.get("from_role") or persona.get("role"),
+    actor_role = _coerce_enum(
+        data.get("actor_role"),
         {"homeowner", "developer", "consultant", "unknown"},
     )
-    experience = _coerce_enum(persona.get("experience_level"), {"low", "medium", "high"})
-    tone = _coerce_enum(persona.get("tone"), {"anxious", "frustrated", "neutral", "urgent", "unknown"})
-
+    tone = _coerce_enum(
+        data.get("tone"),
+        {"anxious", "frustrated", "neutral", "urgent", "unknown"},
+    )
     return {
-        "thread_summary": {
-            "one_sentence": _coerce_text(summary.get("one_sentence")),
-            "stage": stage,
-            "goals": _coerce_list(summary.get("goals")),
-            "constraints": _coerce_list(summary.get("constraints")),
-            "blockers": _coerce_list(summary.get("blockers")),
-            "decision_points": _coerce_list(summary.get("decision_points")),
-            "attachments_mentioned": _coerce_list(summary.get("attachments_mentioned")),
-            "agencies_or_roles": _coerce_list(summary.get("agencies_or_roles")),
-            "timeline_signals": _coerce_list(summary.get("timeline_signals")),
-        },
-        "persona": {
-            "persona_name": _coerce_text(persona.get("persona_name")),
-            "from_role": role,
-            "experience_level": experience,
-            "primary_motivation": _coerce_text(persona.get("primary_motivation")),
-            "frustrations": _coerce_list(persona.get("frustrations")),
-            "needs": _coerce_list(persona.get("needs")),
-            "tone": tone,
-        },
-        "next_questions": {
-            "to_clarify": _coerce_list(next_questions.get("to_clarify")),
-            "to_unblock": _coerce_list(next_questions.get("to_unblock")),
-            "risks_if_ignored": _coerce_list(next_questions.get("risks_if_ignored")),
-        },
+        "stage": stage,
+        "actor_role": actor_role,
+        "tone": tone,
+        "goals": _coerce_list(data.get("goals")),
+        "constraints": _coerce_list(data.get("constraints")),
+        "blockers": _coerce_list(data.get("blockers")),
+        "decision_points": _coerce_list(data.get("decision_points")),
+        "what_they_tried": _coerce_list(data.get("what_they_tried")),
+        "what_they_are_asking": _coerce_list(data.get("what_they_are_asking")),
+        "attachments_mentioned": _coerce_list(data.get("attachments_mentioned")),
+        "agencies_or_roles": _coerce_list(data.get("agencies_or_roles")),
+        "timeline_signals": _coerce_list(data.get("timeline_signals")),
     }
 
 

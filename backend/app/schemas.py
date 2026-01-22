@@ -19,6 +19,21 @@ class ThemeSummary(BaseModel):
     meets_k: bool
 
 
+class ThreadContext(BaseModel):
+    stage: str
+    actor_role: str
+    tone: str
+    goals: List[str]
+    constraints: List[str]
+    blockers: List[str]
+    decision_points: List[str]
+    what_they_tried: List[str]
+    what_they_are_asking: List[str]
+    attachments_mentioned: List[str]
+    agencies_or_roles: List[str]
+    timeline_signals: List[str]
+
+
 class ThreadSummary(BaseModel):
     one_sentence: str
     stage: str
@@ -45,12 +60,6 @@ class NextQuestions(BaseModel):
     to_clarify: List[str]
     to_unblock: List[str]
     risks_if_ignored: List[str]
-
-
-class ThreadAnalysis(BaseModel):
-    thread_summary: ThreadSummary
-    persona: Persona
-    next_questions: NextQuestions
 
 
 class PatternResponse(BaseModel):

@@ -97,6 +97,7 @@ tabs = st.tabs(
         "Load data",
         "Sanitize (Preview)",
         "Single Thread Analyzer",
+        "Thread → Context",
         "Generate realistic pseudo enquiry",
         "Pattern overview",
         "Generate context pack",
@@ -316,11 +317,11 @@ with tabs[2]:
                 if result:
                     st.write("Latest redacted message (preview):")
                     st.code(result.get("latest_message_redacted", "")[:400])
-                    analysis = result.get("analysis", {})
-                    st.markdown("### Thread Context Summary")
-                    st.json(analysis.get("thread_summary", {}))
+                    tco = result.get("tco", {})
+                    st.markdown("### Thread Context Object")
+                    st.json(tco)
                     st.markdown("### Persona")
-                    persona = analysis.get("persona", {})
+                    persona = result.get("persona", {})
                     st.write(
                         f"**{persona.get('persona_name', 'Persona')}** — "
                         f"{persona.get('from_role', 'unknown')} / "
@@ -329,7 +330,7 @@ with tabs[2]:
                     st.write(f"Motivation: {persona.get('primary_motivation', '')}")
                     st.write(f"Tone: {persona.get('tone', '')}")
                     st.markdown("### Next Questions")
-                    next_questions = analysis.get("next_questions", {})
+                    next_questions = result.get("next_questions", {})
                     st.write("To clarify:")
                     st.write(next_questions.get("to_clarify", []))
                     st.write("To unblock:")
@@ -340,6 +341,100 @@ with tabs[2]:
                 st.error(f"Analyze failed: {format_backend_error(exc)}")
 
 with tabs[3]:
+    st.subheader("Thread → Context")
+    st.info("Synthetic / Exploratory — Not real user data")
+    context_source_type = st.selectbox(
+        "Thread source type",
+        options=["auto", "plain", "email"],
+        key="context_source_type",
+    )
+    context_text = st.text_area(
+        "Paste a single email thread",
+        height=200,
+        key="context_text",
+    )
+    context_file = st.file_uploader(
+        "Upload a single .txt or .eml thread",
+        type=["txt", "eml"],
+        key="context_file",
+    )
+    if st.button("Analyze thread"):
+        try:
+            if context_file:
+                result = call_backend_files("/thread/analyze", [context_file], timeout=30)
+            elif context_text.strip():
+                result = call_backend(
+                    "POST",
+                    "/thread/analyze",
+                    {
+                        "text": context_text,
+                        "source_type": context_source_type,
+                    },
+                    timeout=30,
+                )
+            else:
+                st.warning("Provide a thread to analyze.")
+                result = None
+            if result:
+                st.write("Latest redacted message (preview):")
+                st.code(result.get("latest_message_redacted", "")[:400])
+                st.write(f"Turns (redacted): {result.get('turns_redacted_count', 0)}")
+                st.markdown("### Thread Context Object")
+                st.json(result.get("tco", {}))
+                st.markdown("### Persona")
+                persona = result.get("persona", {})
+                st.write(
+                    f"**{persona.get('persona_name', 'Persona')}** — "
+                    f"{persona.get('from_role', 'unknown')} / "
+                    f"{persona.get('experience_level', 'unknown')}"
+                )
+                st.write(f"Motivation: {persona.get('primary_motivation', '')}")
+                st.write(f"Tone: {persona.get('tone', '')}")
+                st.markdown("### Next Questions")
+                next_questions = result.get("next_questions", {})
+                st.write("To clarify:")
+                st.write(next_questions.get("to_clarify", []))
+                st.write("To unblock:")
+                st.write(next_questions.get("to_unblock", []))
+                st.write("Risks if ignored:")
+                st.write(next_questions.get("risks_if_ignored", []))
+                st.markdown("---")
+                if st.button("Generate realistic pseudo enquiry from TCO"):
+                    pseudo = call_backend(
+                        "POST",
+                        "/generate/pseudo_email",
+                        {
+                            "source": "tco",
+                            "tco": result.get("tco", {}),
+                            "persona": result.get("persona", {}),
+                            "next_questions": result.get("next_questions", {}),
+                            "evidence_source": "library",
+                            "n_snippets": 5,
+                        },
+                        timeout=30,
+                    )
+                    pseudo_email = pseudo.get("pseudo_email", {})
+                    st.markdown("### Pseudo enquiry")
+                    st.write(f"**Subject:** {pseudo_email.get('subject', '')}")
+                    st.write(f"**From role:** {pseudo_email.get('from_role', '')}")
+                    st.write(f"**Tone:** {pseudo_email.get('tone', '')}")
+                    st.text_area(
+                        "Email body",
+                        value=pseudo_email.get("body", ""),
+                        height=260,
+                        disabled=True,
+                        key="tco_email_body",
+                    )
+                    st.markdown("### Evidence grounding")
+                    st.write(pseudo.get("inspired_by", ""))
+                    st.caption(
+                        f"Evidence method: {pseudo.get('evidence_method', 'patterns_only')}"
+                    )
+                    st.write(pseudo.get("evidence_snippets", []))
+        except requests.RequestException as exc:
+            st.error(f"Analyze failed: {format_backend_error(exc)}")
+
+with tabs[4]:
     st.subheader("Generate realistic pseudo enquiry")
     st.info("Synthetic / Exploratory — Not real user data")
     st.caption("Evidence snippets are anonymized inspiration (not verbatim).")
@@ -368,7 +463,7 @@ with tabs[3]:
             options=["library", "uploaded", "none"],
             help="Uploaded uses sanitized snippets from this thread.",
         )
-        if st.button("Generate pseudo enquiry"):
+        if st.button("Generate pseudo enquiry", key="generate_pseudo_enquiry_thread"):
             try:
                 thread_text = None
                 if pseudo_file:
@@ -457,7 +552,11 @@ with tabs[3]:
             "Theme",
             options=theme_options if theme_options else ["No themes"],
         )
-        if st.button("Generate pseudo enquiry from theme", disabled=theme_choice == "No themes"):
+        if st.button(
+            "Generate pseudo enquiry from theme",
+            disabled=theme_choice == "No themes",
+            key="generate_pseudo_enquiry_theme",
+        ):
             try:
                 result = call_backend(
                     "POST",
@@ -490,7 +589,7 @@ with tabs[3]:
             except requests.RequestException as exc:
                 st.error(f"Generate failed: {format_backend_error(exc)}")
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("Pattern overview")
     st.caption("Themes are shown from aggregate counts; no raw text is displayed.")
     if st.button("Rebuild patterns"):
@@ -519,7 +618,7 @@ with tabs[4]:
     else:
         st.info("No themes available yet. Load data to see counts.")
 
-with tabs[5]:
+with tabs[6]:
     st.subheader("Generate synthetic context pack")
     st.caption("Outputs are synthetic and privacy-safe.")
     try:
@@ -631,7 +730,7 @@ with tabs[5]:
             except requests.RequestException as exc:
                 st.error(f"Snippet extraction failed: {format_backend_error(exc)}")
 
-with tabs[6]:
+with tabs[7]:
     st.subheader("Export markdown")
     try:
         generated = call_backend("GET", "/generated").get("items", [])
@@ -654,7 +753,7 @@ with tabs[6]:
     else:
         st.info("No generated items available yet.")
 
-with tabs[7]:
+with tabs[8]:
     st.subheader("Audit log")
     try:
         audit = call_backend("GET", "/audit/recent").get("items", [])
