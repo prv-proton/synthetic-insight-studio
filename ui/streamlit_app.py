@@ -253,6 +253,11 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Single Thread Analyzer")
     st.info("All outputs are synthetic/derived and redacted. Raw thread is not stored.")
+    analyzer_enhanced = st.toggle(
+        "ChatGPT-like synthesis (enhanced)",
+        value=True,
+        key="analyzer_enhanced",
+    )
     analyzer_source_type = st.selectbox(
         "Source type",
         options=["auto", "plain", "email"],
@@ -300,7 +305,12 @@ with tabs[2]:
         if st.button("Analyze Thread"):
             try:
                 if analyzer_file:
-                    result = call_backend_files("/thread/analyze", [analyzer_file], timeout=30)
+                    result = call_backend_files(
+                        "/thread/analyze",
+                        [analyzer_file],
+                        params={"enhanced": str(analyzer_enhanced).lower()},
+                        timeout=30,
+                    )
                 elif analyzer_text.strip():
                     result = call_backend(
                         "POST",
@@ -308,6 +318,7 @@ with tabs[2]:
                         {
                             "text": analyzer_text,
                             "source_type": analyzer_source_type,
+                            "enhanced": analyzer_enhanced,
                         },
                         timeout=30,
                     )
@@ -337,12 +348,24 @@ with tabs[2]:
                     st.write(next_questions.get("to_unblock", []))
                     st.write("Risks if ignored:")
                     st.write(next_questions.get("risks_if_ignored", []))
+                    quality = result.get("quality_signals", {})
+                    if quality:
+                        st.markdown("### Quality signals")
+                        st.write(f"Inferred fields: {quality.get('inferred_fields', [])}")
+                        st.write(f"Used repair: {quality.get('used_repair', False)}")
+                        st.write(f"Used improve: {quality.get('used_improve', False)}")
+                        st.write(f"Issues: {quality.get('issues', [])}")
             except requests.RequestException as exc:
                 st.error(f"Analyze failed: {format_backend_error(exc)}")
 
 with tabs[3]:
     st.subheader("Thread → Context")
     st.info("Synthetic / Exploratory — Not real user data")
+    context_enhanced = st.toggle(
+        "ChatGPT-like synthesis (enhanced)",
+        value=True,
+        key="context_enhanced",
+    )
     context_source_type = st.selectbox(
         "Thread source type",
         options=["auto", "plain", "email"],
@@ -361,7 +384,12 @@ with tabs[3]:
     if st.button("Analyze thread"):
         try:
             if context_file:
-                result = call_backend_files("/thread/analyze", [context_file], timeout=30)
+                result = call_backend_files(
+                    "/thread/analyze",
+                    [context_file],
+                    params={"enhanced": str(context_enhanced).lower()},
+                    timeout=30,
+                )
             elif context_text.strip():
                 result = call_backend(
                     "POST",
@@ -369,6 +397,7 @@ with tabs[3]:
                     {
                         "text": context_text,
                         "source_type": context_source_type,
+                        "enhanced": context_enhanced,
                     },
                     timeout=30,
                 )
@@ -398,6 +427,13 @@ with tabs[3]:
                 st.write(next_questions.get("to_unblock", []))
                 st.write("Risks if ignored:")
                 st.write(next_questions.get("risks_if_ignored", []))
+                quality = result.get("quality_signals", {})
+                if quality:
+                    st.markdown("### Quality signals")
+                    st.write(f"Inferred fields: {quality.get('inferred_fields', [])}")
+                    st.write(f"Used repair: {quality.get('used_repair', False)}")
+                    st.write(f"Used improve: {quality.get('used_improve', False)}")
+                    st.write(f"Issues: {quality.get('issues', [])}")
                 st.markdown("---")
                 if st.button("Generate realistic pseudo enquiry from TCO"):
                     pseudo = call_backend(
@@ -410,6 +446,7 @@ with tabs[3]:
                             "next_questions": result.get("next_questions", {}),
                             "evidence_source": "library",
                             "n_snippets": 5,
+                            "enhanced": context_enhanced,
                         },
                         timeout=30,
                     )
@@ -431,6 +468,12 @@ with tabs[3]:
                         f"Evidence method: {pseudo.get('evidence_method', 'patterns_only')}"
                     )
                     st.write(pseudo.get("evidence_snippets", []))
+                    email_quality = pseudo.get("quality_signals", {})
+                    if email_quality:
+                        st.markdown("### Quality signals")
+                        st.write(f"Used repair: {email_quality.get('used_repair', False)}")
+                        st.write(f"Used improve: {email_quality.get('used_improve', False)}")
+                        st.write(f"Issues: {email_quality.get('issues', [])}")
         except requests.RequestException as exc:
             st.error(f"Analyze failed: {format_backend_error(exc)}")
 
@@ -438,6 +481,11 @@ with tabs[4]:
     st.subheader("Generate realistic pseudo enquiry")
     st.info("Synthetic / Exploratory — Not real user data")
     st.caption("Evidence snippets are anonymized inspiration (not verbatim).")
+    pseudo_enhanced = st.toggle(
+        "ChatGPT-like synthesis (enhanced)",
+        value=True,
+        key="pseudo_enhanced",
+    )
     mode = st.radio(
         "Mode",
         options=["From a single thread", "From themes/patterns"],
@@ -492,6 +540,7 @@ with tabs[4]:
                             "thread_text": thread_text,
                             "evidence_source": evidence_source,
                             "n_snippets": 5,
+                            "enhanced": pseudo_enhanced,
                         },
                         timeout=30,
                     )
@@ -537,6 +586,12 @@ with tabs[4]:
                         f"Evidence method: {result.get('evidence_method', 'patterns_only')}"
                     )
                     st.write(result.get("evidence_snippets", []))
+                    email_quality = result.get("quality_signals", {})
+                    if email_quality:
+                        st.markdown("### Quality signals")
+                        st.write(f"Used repair: {email_quality.get('used_repair', False)}")
+                        st.write(f"Used improve: {email_quality.get('used_improve', False)}")
+                        st.write(f"Issues: {email_quality.get('issues', [])}")
             except requests.RequestException as exc:
                 st.error(f"Generate failed: {format_backend_error(exc)}")
     else:
@@ -566,6 +621,7 @@ with tabs[4]:
                         "theme": theme_choice,
                         "evidence_source": "library",
                         "n_snippets": 5,
+                        "enhanced": pseudo_enhanced,
                     },
                     timeout=30,
                 )
@@ -586,6 +642,12 @@ with tabs[4]:
                     f"Evidence method: {result.get('evidence_method', 'patterns_only')}"
                 )
                 st.write(result.get("evidence_snippets", []))
+                email_quality = result.get("quality_signals", {})
+                if email_quality:
+                    st.markdown("### Quality signals")
+                    st.write(f"Used repair: {email_quality.get('used_repair', False)}")
+                    st.write(f"Used improve: {email_quality.get('used_improve', False)}")
+                    st.write(f"Issues: {email_quality.get('issues', [])}")
             except requests.RequestException as exc:
                 st.error(f"Generate failed: {format_backend_error(exc)}")
 

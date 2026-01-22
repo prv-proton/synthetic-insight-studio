@@ -11,10 +11,11 @@ from .audit import record
 from .config import settings
 from .generator import (
     DISCLAIMER,
+    generate_high_fidelity_pseudo_email,
     generate_personas,
     generate_pseudo_enquiries,
-    generate_scenarios,
     generate_pseudo_thread_first_email,
+    generate_scenarios,
     wrap_output,
 )
 from .ingestion import infer_source_type, trim_excess_whitespace
@@ -48,6 +49,13 @@ from .email_thread import (
     redact_uniform,
     split_thread_into_turns,
 )
+from .llm_client import generate_json
+from .prompts import (
+    build_context_prompt,
+    build_json_repair_prompt,
+    build_quality_improve_prompt,
+)
+from .quality import evaluate_tco
 
 
 app = FastAPI(title="Synthetic Insight Studio", version="1.0.0")
@@ -106,10 +114,20 @@ async def analyze_thread(
     request: Request,
     files: List[UploadFile] | None = File(default=None),
 ) -> Dict[str, object]:
-    text, source_type = await _get_thread_payload(request, files)
-    tco, persona, next_questions, redacted_latest, meta, stats, turns_count = _analyze_thread_text(
+    text, source_type, enhanced = await _get_thread_payload(request, files)
+    (
+        tco,
+        persona,
+        next_questions,
+        redacted_latest,
+        meta,
+        stats,
+        turns_count,
+        quality_signals,
+    ) = _analyze_thread_text(
         text,
         source_type,
+        enhanced,
     )
 
     record(
@@ -129,6 +147,7 @@ async def analyze_thread(
         "next_questions": next_questions,
         "meta": meta,
         "turns_redacted_count": turns_count,
+        "quality_signals": quality_signals,
     }
 
 
@@ -149,13 +168,18 @@ async def generate_pseudo_email(request: Request) -> Dict[str, object]:
     evidence_source = payload.get("evidence_source", "none")
     n_snippets = int(payload.get("n_snippets", 5))
     style = payload.get("style", "permit_housing")
+    enhanced = payload.get("enhanced", True)
 
     analysis = None
     context: Dict[str, object] = {}
     if source == "thread_analyze":
         if not isinstance(thread_text, str) or not thread_text.strip():
             raise HTTPException(status_code=400, detail="thread_text is required")
-        tco, persona, next_questions, _, _, _, _ = _analyze_thread_text(thread_text, "auto")
+        tco, persona, next_questions, _, _, _, _, _ = _analyze_thread_text(
+            thread_text,
+            "auto",
+            bool(enhanced),
+        )
         analysis = {"tco": tco, "persona": persona, "next_questions": next_questions}
         context = {"tco": tco, "persona": persona, "next_questions": next_questions}
     elif source == "tco":
@@ -179,8 +203,13 @@ async def generate_pseudo_email(request: Request) -> Dict[str, object]:
     else:
         raise HTTPException(status_code=400, detail="source must be thread_analyze, tco, or patterns")
 
-    pseudo_emails = generate_pseudo_thread_first_email(context, style=style, n=1)
-    pseudo_email = pseudo_emails[0] if pseudo_emails else {}
+    if enhanced:
+        pseudo_email = generate_high_fidelity_pseudo_email(context, style=style, enhanced=True)
+        pseudo_quality = pseudo_email.pop("quality_signals", None)
+    else:
+        pseudo_emails = generate_pseudo_thread_first_email(context, style=style, n=1)
+        pseudo_email = pseudo_emails[0] if pseudo_emails else {}
+        pseudo_quality = None
 
     topic = payload.get("topic", "permit_housing")
     evidence_snippets, evidence_method = _resolve_evidence_snippets(
@@ -207,6 +236,8 @@ async def generate_pseudo_email(request: Request) -> Dict[str, object]:
         "evidence_method": evidence_method,
         "inspired_by": inspired_by,
     }
+    if pseudo_quality:
+        response["quality_signals"] = pseudo_quality
     if analysis:
         response["analysis"] = analysis
     return response
@@ -422,7 +453,7 @@ def _sanitize_text(
 async def _get_thread_payload(
     request: Request,
     files: List[UploadFile] | None,
-) -> tuple[str, str]:
+) -> tuple[str, str, bool]:
     if files:
         if len(files) != 1:
             raise HTTPException(status_code=400, detail="Upload exactly one thread file")
@@ -434,25 +465,30 @@ async def _get_thread_payload(
         raw_bytes = await file.read()
         text = raw_bytes.decode("utf-8", errors="replace")
         source_type = "email" if extension == ".eml" else "auto"
-        return text, source_type
+        enhanced_flag = request.query_params.get("enhanced", "true").lower() != "false"
+        return text, source_type, enhanced_flag
     payload = await request.json()
     text = payload.get("text") if isinstance(payload, dict) else None
     if not text or not isinstance(text, str):
         raise HTTPException(status_code=400, detail="Text is required")
     source_type = payload.get("source_type", "auto")
-    return text, source_type
+    enhanced_flag = payload.get("enhanced", True)
+    return text, source_type, bool(enhanced_flag)
 
 
 def _analyze_thread_text(
     text: str,
     source_type: str,
+    enhanced: bool,
 ) -> tuple[
     Dict[str, object],
     Dict[str, object],
     Dict[str, object],
     str,
     Dict[str, object],
+    Dict[str, object],
     int,
+    Dict[str, object],
 ]:
     normalized = _normalize_thread_input(text, source_type)
     cleaned_full = normalized["cleaned_full"]
@@ -470,11 +506,21 @@ def _analyze_thread_text(
         meta,
         redacted_turns,
     )
-    tco = _refine_tco_with_ollama(tco_heuristic, redacted_latest, redacted_turns)
+    tco, tco_meta = _refine_tco_with_ollama(tco_heuristic, redacted_full, enhanced)
     tco = _sanitize_tco_output(tco)
     persona, next_questions = _build_persona_and_questions(tco, redacted_latest)
     stats = {"latest": latest_stats, "full": full_stats}
-    return tco, persona, next_questions, redacted_latest[:400], meta, stats, len(redacted_turns)
+    quality_signals = _tco_quality_signals(tco_heuristic, tco, enhanced, tco_meta)
+    return (
+        tco,
+        persona,
+        next_questions,
+        redacted_latest[:400],
+        meta,
+        stats,
+        len(redacted_turns),
+        quality_signals,
+    )
 
 
 def _infer_sanitize_source_type(text: str, source_type: str) -> str:
@@ -731,35 +777,44 @@ def _build_persona_and_questions(
 
 def _refine_tco_with_ollama(
     heuristic: Dict[str, object],
-    latest_message: str,
-    turns: List[Dict[str, str]],
-) -> Dict[str, object]:
-    prompt = _build_tco_prompt(heuristic, latest_message, turns)
+    thread_redacted: str,
+    enhanced: bool,
+) -> tuple[Dict[str, object], Dict[str, object]]:
+    quality_meta = {"used_repair": False, "used_improve": False, "issues": []}
+    if not enhanced or settings.llm_provider.lower() != "ollama":
+        return heuristic, quality_meta
+    prompt = build_context_prompt(thread_redacted, heuristic)
     try:
-        if settings.llm_provider.lower() != "ollama":
-            return heuristic
-        response = requests.post(
-            f"{settings.ollama_url}/api/generate",
-            json={
-                "model": settings.ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.2},
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        payload = generate_json(prompt, temperature=0.4, top_p=0.9, num_predict=900)
         raw = payload.get("response", "").strip()
         data = _parse_json_payload(raw)
         if data is None:
-            return heuristic
+            repair_prompt = build_json_repair_prompt(raw, _tco_schema_hint())
+            payload = generate_json(repair_prompt, temperature=0.3, top_p=0.9, num_predict=700)
+            raw = payload.get("response", "").strip()
+            data = _parse_json_payload(raw)
+            quality_meta["used_repair"] = True
+        if data is None:
+            return heuristic, quality_meta
         validated = ThreadContext.model_validate(data)
-        return validated.model_dump()
+        tco = validated.model_dump()
+        issues = evaluate_tco(tco)
+        quality_meta["issues"] = issues
+        if issues:
+            improve_prompt = build_quality_improve_prompt(tco, heuristic)
+            payload = generate_json(improve_prompt, temperature=0.5, top_p=0.9, num_predict=900)
+            raw = payload.get("response", "").strip()
+            improved = _parse_json_payload(raw)
+            if improved:
+                improved_validated = ThreadContext.model_validate(improved)
+                tco = improved_validated.model_dump()
+                quality_meta["used_improve"] = True
+                quality_meta["issues"] = evaluate_tco(tco)
+        return tco, quality_meta
     except requests.RequestException:
-        return heuristic
+        return heuristic, quality_meta
     except ValueError:
-        return heuristic
+        return heuristic, quality_meta
 
 
 def _sanitize_tco_output(tco: Dict[str, object]) -> Dict[str, object]:
@@ -767,6 +822,69 @@ def _sanitize_tco_output(tco: Dict[str, object]) -> Dict[str, object]:
     coerced = _coerce_tco_schema(sanitized)
     validated = ThreadContext.model_validate(coerced)
     return validated.model_dump()
+
+
+def _tco_schema_hint() -> str:
+    return (
+        "{\n"
+        '  "stage": "early_inquiry|in_review|conflict_resolution|closeout|expedite|unknown",\n'
+        '  "actor_role": "homeowner|developer|consultant|unknown",\n'
+        '  "tone": "urgent|anxious|frustrated|neutral|unknown",\n'
+        '  "goals": [str],\n'
+        '  "constraints": [str],\n'
+        '  "blockers": [str],\n'
+        '  "decision_points": [str],\n'
+        '  "what_they_tried": [str],\n'
+        '  "what_they_are_asking": [str],\n'
+        '  "attachments_mentioned": [str],\n'
+        '  "agencies_or_roles": [str],\n'
+        '  "timeline_signals": [str]\n'
+        "}"
+    )
+
+
+def _tco_quality_signals(
+    baseline: Dict[str, object],
+    final: Dict[str, object],
+    enhanced: bool,
+    tco_meta: Dict[str, object],
+) -> Dict[str, object]:
+    inferred_fields = _infer_fields(baseline, final)
+    return {
+        "enhanced": enhanced,
+        "inferred_fields": inferred_fields,
+        "used_repair": tco_meta.get("used_repair", False),
+        "used_improve": tco_meta.get("used_improve", False),
+        "issues": tco_meta.get("issues", []),
+    }
+
+
+def _infer_fields(
+    baseline: Dict[str, object],
+    final: Dict[str, object],
+) -> List[str]:
+    inferred: List[str] = []
+    for key in [
+        "stage",
+        "actor_role",
+        "tone",
+        "goals",
+        "constraints",
+        "blockers",
+        "decision_points",
+        "what_they_tried",
+        "what_they_are_asking",
+        "attachments_mentioned",
+        "agencies_or_roles",
+        "timeline_signals",
+    ]:
+        base_val = baseline.get(key)
+        final_val = final.get(key)
+        if isinstance(base_val, str) and base_val == "unknown" and final_val not in {None, "unknown"}:
+            inferred.append(key)
+        elif isinstance(base_val, list) and not base_val and isinstance(final_val, list) and final_val:
+            inferred.append(key)
+    return inferred
 
 
 def _extract_evidence_snippets(text: str) -> List[str]:

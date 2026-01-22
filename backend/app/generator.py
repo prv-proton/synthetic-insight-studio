@@ -1,12 +1,20 @@
 import json
 import re
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
 import requests
 
 from .config import settings
 from .email_thread import redact_uniform
+from .llm_client import generate_json
 from .pii import detect_pii, redact
+from .prompts import (
+    build_json_repair_prompt,
+    build_pseudo_email_prompt,
+    build_quality_improve_prompt,
+)
+from .quality import evaluate_pseudo_email
+from .schemas import PseudoEmailModel
 
 
 DISCLAIMER = "Synthetic / Exploratory — Not real user data"
@@ -287,6 +295,36 @@ def generate_pseudo_thread_first_email(
     return processed
 
 
+def generate_high_fidelity_pseudo_email(
+    context_json: Dict[str, Any],
+    style: str = "permit_housing",
+    enhanced: bool = True,
+) -> Dict[str, Any]:
+    prompt = build_pseudo_email_prompt(context_json, style=style)
+    draft, used_repair = _generate_pseudo_email_json(prompt)
+    validated = _validate_pseudo_email(draft)
+    if validated is None:
+        validated = _template_pseudo_emails(context_json, 1)[0]
+    issues = evaluate_pseudo_email(validated)
+    used_improve = False
+    if enhanced and issues:
+        improved_prompt = build_quality_improve_prompt(validated, context_json)
+        improved, used_repair_2 = _generate_pseudo_email_json(improved_prompt)
+        improved_validated = _validate_pseudo_email(improved)
+        if improved_validated:
+            validated = improved_validated
+            used_repair = used_repair or used_repair_2
+            used_improve = True
+            issues = evaluate_pseudo_email(validated)
+    cleaned = _sanitize_pseudo_email(validated)
+    cleaned["quality_signals"] = {
+        "issues": issues,
+        "used_repair": used_repair,
+        "used_improve": used_improve,
+    }
+    return cleaned
+
+
 def _ollama_generate_json(prompt: str) -> Dict[str, Any]:
     response = requests.post(
         f"{settings.ollama_url}/api/generate",
@@ -306,6 +344,31 @@ def _ollama_generate_json(prompt: str) -> Dict[str, Any]:
 
 def _parse_json_payload(raw: str) -> Dict[str, Any] | None:
     if not raw:
+    return None
+
+
+def _generate_pseudo_email_json(prompt: str) -> tuple[Dict[str, Any], bool]:
+    used_repair = False
+    payload = generate_json(prompt, temperature=0.7, top_p=0.9, num_predict=1000)
+    raw = payload.get("response", "").strip()
+    parsed = _parse_json_payload(raw) or {}
+    if parsed:
+        return parsed, used_repair
+    repair_prompt = build_json_repair_prompt(raw, _pseudo_email_schema_hint())
+    payload = generate_json(repair_prompt, temperature=0.4, top_p=0.9, num_predict=800)
+    raw = payload.get("response", "").strip()
+    parsed = _parse_json_payload(raw) or {}
+    used_repair = True
+    return parsed, used_repair
+
+
+def _validate_pseudo_email(payload: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not payload:
+        return None
+    try:
+        validated = PseudoEmailModel.model_validate(payload)
+        return validated.model_dump()
+    except ValueError:
         return None
     start = raw.find("{")
     end = raw.rfind("}")
@@ -472,3 +535,18 @@ def _context_from_pattern(theme: str, pattern: Dict[str, Any]) -> Dict[str, Any]
             "tone": "neutral",
         },
     }
+
+
+def _pseudo_email_schema_hint() -> str:
+    return (
+        "{\n"
+        '  "subject": str,\n'
+        '  "from_role": "homeowner|developer|consultant|unknown",\n'
+        '  "tone": "urgent|anxious|frustrated|neutral|unknown",\n'
+        '  "body": str,\n'
+        '  "attachments_mentioned": [str],\n'
+        '  "motivations": [str],\n'
+        '  "decision_points": [str],\n'
+        '  "assumptions": [str]\n'
+        "}"
+    )

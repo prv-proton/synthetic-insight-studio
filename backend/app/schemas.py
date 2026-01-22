@@ -62,6 +62,17 @@ class NextQuestions(BaseModel):
     risks_if_ignored: List[str]
 
 
+class PseudoEmailModel(BaseModel):
+    subject: str
+    from_role: str
+    tone: str
+    body: str
+    attachments_mentioned: List[str]
+    motivations: List[str]
+    decision_points: List[str]
+    assumptions: List[str]
+
+
 class PatternResponse(BaseModel):
     theme: str
     pattern: Dict[str, Any]
