@@ -287,7 +287,13 @@ with tabs[2]:
                     item = None
                 if item:
                     st.write("Redacted preview:")
-                    st.code((item.get("sanitized_text", "") or "")[:400])
+                    sanitized_value = item.get("sanitized_text", "") or ""
+                    st.text_area(
+                        "Masked thread",
+                        value=sanitized_value,
+                        height=300,
+                        disabled=True,
+                    )
                     st.write("Redaction stats:")
                     st.table([item.get("redaction_stats", {})])
             except requests.RequestException as exc:
@@ -311,8 +317,23 @@ with tabs[2]:
                     st.warning("Provide a thread to analyze.")
                     result = None
                 if result:
+                    full_thread = result.get("full_thread_redacted", "")
+                    if full_thread:
+                        st.write("Full redacted thread:")
+                        st.text_area(
+                            "Full thread (masked)",
+                            value=full_thread,
+                            height=300,
+                            disabled=True,
+                        )
                     st.write("Latest redacted message (preview):")
-                    st.code(result.get("latest_message_redacted", "")[:400])
+                    latest_preview = result.get("latest_message_redacted", "")
+                    st.text_area(
+                        "Latest message (masked)",
+                        value=latest_preview,
+                        height=200,
+                        disabled=True,
+                    )
                     analysis = result.get("analysis", {})
                     st.markdown("### Thread Context Summary")
                     st.json(analysis.get("thread_summary", {}))
@@ -421,61 +442,31 @@ with tabs[4]:
                     st.write(f"Confidence: {result.get('confidence')}")
                 if result.get("note"):
                     st.info(result.get("note"))
-                st.write(result.get("items", []))
+                items = result.get("items", [])
+                if kind == "enquiry" and items:
+                    for idx, item in enumerate(items, start=1):
+                        st.markdown(f"**Pseudo enquiry {idx}**")
+                        if isinstance(item, dict):
+                            tone = item.get("tone")
+                            pressure = item.get("pressure")
+                            if tone or pressure:
+                                st.caption(f"Tone: {tone or 'n/a'} · Pressure: {pressure or 'n/a'}")
+                            st.write(item.get("text", ""))
+                            evidence = item.get("evidence", [])
+                            if evidence:
+                                st.caption("Evidence snippets (sanitized & anonymized)")
+                                for snippet in evidence:
+                                    st.code(snippet)
+                            elif item.get("evidence_note"):
+                                st.caption(item.get("evidence_note"))
+                        else:
+                            st.write(item)
+                else:
+                    st.write(items)
             except requests.RequestException as exc:
                 st.error(f"Generation failed: {format_backend_error(exc)}")
 
     st.markdown("---")
-    st.subheader("Evidence grounding")
-    st.caption("Evidence is derived from masked text or aggregate patterns only.")
-    evidence_mode = st.radio(
-        "Evidence source",
-        options=["Aggregated evidence cards", "Upload sample for masked snippets"],
-        horizontal=True,
-    )
-    if evidence_mode == "Aggregated evidence cards":
-        if theme == "No themes":
-            st.info("Select a theme to load evidence cards.")
-        elif st.button("Load evidence cards"):
-            try:
-                cards_response = call_backend(
-                    "GET", f"/evidence/cards?theme={quote(theme)}"
-                )
-                cards = cards_response.get("evidence_cards", [])
-                if cards:
-                    for card in cards:
-                        st.markdown(f"**{card.get('title')}**")
-                        st.write(card.get("detail"))
-                        st.caption(f"Confidence: {card.get('confidence')}")
-                else:
-                    st.info("No evidence cards available.")
-            except requests.RequestException as exc:
-                st.error(f"Failed to load evidence cards: {format_backend_error(exc)}")
-    else:
-        sample_file = st.file_uploader(
-            "Upload a sample .txt or .eml file for masked snippets",
-            type=["txt", "eml"],
-        )
-        if sample_file and st.button("Extract masked snippets"):
-            try:
-                result = call_backend_files(
-                    "/sanitize",
-                    [sample_file],
-                    params={"mode": "mask_and_extract_evidence"},
-                )
-                items = result.get("items", [])
-                evidence_snippets = items[0].get("evidence_snippets") if items else []
-                if evidence_snippets:
-                    st.write("Masked inspiration snippets:")
-                    for snippet in evidence_snippets:
-                        st.code(snippet)
-                else:
-                    st.info("No snippets extracted from the sample.")
-                st.caption(
-                    "Snippets are extracted only from masked text; nothing is stored."
-                )
-            except requests.RequestException as exc:
-                st.error(f"Snippet extraction failed: {format_backend_error(exc)}")
 
 with tabs[5]:
     st.subheader("Export markdown")
@@ -492,7 +483,16 @@ with tabs[5]:
             export_lines.append(content.get("disclaimer", ""))
             export_lines.append("")
             for entry in content.get("items", []):
-                export_lines.append(f"- {entry}")
+                if isinstance(entry, dict):
+                    export_lines.append(f"- {entry.get('text', '')}")
+                    evidence_list = entry.get("evidence") or []
+                    if evidence_list:
+                        for snippet in evidence_list:
+                            export_lines.append(f"  - evidence: {snippet}")
+                    elif entry.get("evidence_note"):
+                        export_lines.append(f"  - evidence: {entry.get('evidence_note')}")
+                else:
+                    export_lines.append(f"- {entry}")
             export_lines.append("")
         markdown = "\n".join(export_lines)
         st.download_button("Download markdown", data=markdown, file_name="synthetic_export.md")

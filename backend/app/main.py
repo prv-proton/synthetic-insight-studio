@@ -139,7 +139,7 @@ async def analyze_thread(
         meta,
         redacted_turns,
     )
-    analysis = _refine_with_ollama(heuristic, redacted_latest, redacted_turns)
+    analysis = _refine_with_ollama(heuristic, redacted_latest, redacted_full, redacted_turns)
     analysis = _sanitize_analysis_output(analysis)
 
     record(
@@ -156,10 +156,15 @@ async def analyze_thread(
     )
 
     return {
-        "latest_message_redacted": redacted_latest[:400],
+        "latest_message_redacted": redacted_latest,
+        "full_thread_redacted": redacted_full,
         "analysis": analysis,
         "meta": meta,
         "turns_count": len(redacted_turns),
+        "redaction_stats": {
+            "latest": latest_stats,
+            "full": full_stats,
+        },
     }
 
 
@@ -444,7 +449,9 @@ def _build_heuristic_analysis(
     meta: Dict[str, object],
     turns: List[Dict[str, str]],
 ) -> Dict[str, object]:
-    base_text = latest_message or full_text
+    analysis_text = full_text or latest_message
+    base_text = analysis_text or ""
+    latest_focus = latest_message or base_text
     subject = meta.get("subject") if isinstance(meta, dict) else None
 
     goals = _extract_sentences(base_text, ["need", "request", "looking for", "seeking", "want"])
@@ -469,9 +476,9 @@ def _build_heuristic_analysis(
     timeline_signals = _extract_timeline_signals(full_text)
     stage = _infer_stage(full_text)
 
-    role = _infer_role(full_text)
-    experience_level = _infer_experience(full_text)
-    tone = _infer_tone(base_text)
+    role = _infer_role(base_text)
+    experience_level = _infer_experience(base_text)
+    tone = _infer_tone(latest_focus)
     primary_motivation = (
         goals[0] if goals else "Clarity on requirements and next steps."
     )
@@ -514,9 +521,10 @@ def _build_heuristic_analysis(
 def _refine_with_ollama(
     heuristic: Dict[str, object],
     latest_message: str,
+    full_thread: str,
     turns: List[Dict[str, str]],
 ) -> Dict[str, object]:
-    prompt = _build_thread_prompt(heuristic, latest_message, turns)
+    prompt = _build_thread_prompt(heuristic, latest_message, full_thread, turns)
     try:
         if settings.llm_provider.lower() != "ollama":
             return heuristic
@@ -762,10 +770,12 @@ def _build_risk_questions(blockers: List[str], timeline: List[str]) -> List[str]
 def _build_thread_prompt(
     heuristic: Dict[str, object],
     latest_message: str,
+    full_thread: str,
     turns: List[Dict[str, str]],
 ) -> str:
     turns_preview = json.dumps(turns[:6], ensure_ascii=False)
     heuristic_json = json.dumps(heuristic, ensure_ascii=False)
+    full_preview = full_thread[:1500]
     return (
         "You are refining a redacted email thread analysis.\n"
         "Rules: NEVER output real names/emails/phones/addresses. Keep tokens like "
@@ -798,6 +808,7 @@ def _build_thread_prompt(
         '    "risks_if_ignored": [str]\n'
         "  }\n"
         "}\n"
+        f"Full redacted thread:\n{full_preview}\n"
         f"Latest redacted message:\n{latest_message}\n"
         f"Thread turns (redacted preview):\n{turns_preview}\n"
         f"Baseline heuristic JSON:\n{heuristic_json}\n"

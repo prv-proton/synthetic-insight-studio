@@ -1,14 +1,17 @@
 import json
+import random
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import requests
 
 from .config import settings
 from .pii import detect_pii, redact
+from .storage import get_sanitized_texts
 
 
 DISCLAIMER = "Synthetic / Exploratory — Not real user data"
+MAX_SNIPPET_LENGTH = 320
 
 
 def _ollama_generate(prompt: str) -> List[str]:
@@ -211,7 +214,166 @@ def _generate_with_guardrails(prompt: str, kind: str, theme: str, pattern: Dict[
     return _post_process(cleaned)
 
 
-def generate_pseudo_enquiries(theme: str, pattern: Dict[str, object], n: int) -> List[str]:
+def _split_into_snippets(text: str) -> List[str]:
+    # First split on blank lines to detect paragraphs
+    paragraphs = re.split(r"\n{2,}", text)
+    candidates: List[str] = []
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        # Further split into sentences or bullet-style fragments
+        sentences = re.split(r"(?<=[.!?])\s+|[\n•\-]+", paragraph)
+        for sentence in sentences:
+            normalized = re.sub(r"\s+", " ", sentence).strip(" -•")
+            if not normalized:
+                continue
+            if len(normalized) < 25:
+                continue
+            candidates.append(normalized[:MAX_SNIPPET_LENGTH].strip())
+    return candidates
+
+
+def _fetch_evidence_snippets(theme: str, limit: int = 30) -> List[str]:
+    sanitized_texts = get_sanitized_texts(theme)
+    if not sanitized_texts:
+        return []
+    snippets: List[str] = []
+    seen: set[str] = set()
+    for text in sanitized_texts:
+        for snippet in _split_into_snippets(text):
+            # Ensure snippets remain privacy-safe even if sanitized text missed something
+            if detect_pii(snippet):
+                snippet, _ = redact(snippet)
+            key = snippet.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            snippets.append(snippet)
+            if len(snippets) >= limit:
+                return snippets
+    return snippets
+
+
+def _infer_tone(snippet: Optional[str]) -> str:
+    if not snippet:
+        return "measured but cautious"
+    lowered = snippet.lower()
+    tone_map = {
+        "urgent": ["urgent", "asap", "immediate", "escalate", "rush", "financing"],
+        "frustrated": ["frustrated", "confused", "again", "still waiting", "pushed back"],
+        "concerned": ["concerned", "worried", "risk", "delay", "deadline"],
+        "pressured": ["lender", "carry cost", "financing", "expedite", "penalty"],
+        "clarifying": ["confirm", "clarify", "guidance", "direction"],
+    }
+    for tone, keywords in tone_map.items():
+        if any(keyword in lowered for keyword in keywords):
+            if tone == "urgent":
+                return "urgent and escalating"
+            if tone == "frustrated":
+                return "frustrated but collaborative"
+            if tone == "concerned":
+                return "concerned about downstream risk"
+            if tone == "pressured":
+                return "under financing pressure"
+            if tone == "clarifying":
+                return "seeking specific clarification"
+    return "measured but cautious"
+
+
+def _infer_pressure(snippet: Optional[str], theme: str) -> str:
+    focus = theme.lower()
+    generic = f"keep the {focus} workstream on schedule"
+    if not snippet:
+        return generic
+    lowered = snippet.lower()
+    if any(keyword in lowered for keyword in ["deadline", "closing", "funding", "draw"]):
+        return "protect financing milestones and avoid lender penalties"
+    if any(keyword in lowered for keyword in ["inspection", "final", "occupancy"]):
+        return "sequence inspections so occupancy isn't blocked"
+    if any(keyword in lowered for keyword in ["intake", "submitted", "portal", "status"]):
+        return "get a definitive read on intake status"
+    if any(keyword in lowered for keyword in ["comments", "revision", "resubmit"]):
+        return "close lingering review comments before resubmittal"
+    if any(keyword in lowered for keyword in ["fire", "access", "swept"]):
+        return "confirm fire access requirements before site work"
+    return generic
+
+
+def _focus_summary(pattern: Dict[str, object], defaults: Dict[str, str]) -> str:
+    top_terms = _clean_terms(pattern.get("top_terms", []))
+    phrases = _clean_terms(pattern.get("common_phrases", []))
+    if top_terms and phrases:
+        return f"{', '.join(top_terms[:2])} alignment around {phrases[0]}"
+    if top_terms:
+        return f"{', '.join(top_terms[:3])} coordination"
+    if phrases:
+        return f"{phrases[0]} guidance"
+    return defaults["focus"]
+
+
+def _build_enquiry_copy(
+    theme: str,
+    pattern: Dict[str, object],
+    snippet: Optional[str],
+    idx: int,
+) -> str:
+    defaults = _persona_defaults(theme)
+    tone = _infer_tone(snippet)
+    pressure = _infer_pressure(snippet, theme)
+    focus = _focus_summary(pattern, defaults)
+    snippet_clause = snippet or f"recent notes referencing {focus}"
+    closing_actions = [
+        "keep consultants aligned",
+        "sequence submissions without rework",
+        "unlock the next municipal checkpoint",
+        "answer the lender's questions confidently",
+        "plan the next coordination call with agencies",
+    ]
+    closing = closing_actions[idx % len(closing_actions)]
+    return (
+        f"A {defaults['role']} working through {theme.lower()} sounds {tone}. "
+        f"They spell out that \"{snippet_clause}\" and they are trying to {pressure}. "
+        f"They need concrete guidance on {focus} so they can {closing}."
+    )
+
+
+def _sample_evidence(snippets: List[str], anchor: Optional[str], per_item: int = 3) -> List[str]:
+    if not snippets:
+        return []
+    pool = snippets.copy()
+    random.shuffle(pool)
+    evidence: List[str] = []
+    if anchor and anchor in snippets:
+        evidence.append(anchor)
+    for snippet in pool:
+        if anchor and snippet == anchor:
+            continue
+        evidence.append(snippet)
+        if len(evidence) >= per_item:
+            break
+    return evidence[:per_item]
+
+
+def generate_pseudo_enquiries(theme: str, pattern: Dict[str, object], n: int) -> List[Dict[str, object]]:
+    snippets = _fetch_evidence_snippets(theme, limit=max(10, n * 3))
+    items: List[Dict[str, object]] = []
+    if snippets:
+        for idx in range(n):
+            snippet = snippets[idx % len(snippets)]
+            text = _build_enquiry_copy(theme, pattern, snippet, idx)
+            evidence = _sample_evidence(snippets, snippet)
+            items.append(
+                {
+                    "text": text,
+                    "evidence": evidence,
+                    "tone": _infer_tone(snippet),
+                    "pressure": _infer_pressure(snippet, theme),
+                }
+            )
+        return items
+
+    # Fall back to templated generation if no snippets are available yet
     prompt = (
         f"Generate {n} synthetic user enquiries based on this theme and pattern.\n"
         f"Theme: {theme}\n"
@@ -219,7 +381,18 @@ def generate_pseudo_enquiries(theme: str, pattern: Dict[str, object], n: int) ->
         "Rules: No names, no IDs, no dates, no locations, synthetic only.\n"
         "Return as bullet points."
     )
-    return _generate_with_guardrails(prompt, "enquiry", theme, pattern, n)
+    fallback_items = _generate_with_guardrails(prompt, "enquiry", theme, pattern, n)
+    for entry in fallback_items:
+        items.append(
+            {
+                "text": entry,
+                "evidence": [],
+                "tone": "measured but cautious",
+                "pressure": f"keep the {theme.lower()} workstream on schedule",
+                "evidence_note": "No sanitized snippets available yet for this theme.",
+            }
+        )
+    return items
 
 
 def generate_personas(theme: str, pattern: Dict[str, object], n: int) -> List[str]:
@@ -244,7 +417,7 @@ def generate_scenarios(theme: str, pattern: Dict[str, object], n: int) -> List[s
     return _generate_with_guardrails(prompt, "scenario", theme, pattern, n)
 
 
-def wrap_output(kind: str, items: List[str]) -> Dict[str, object]:
+def wrap_output(kind: str, items: List[object]) -> Dict[str, object]:
     return {
         "kind": kind,
         "items": items,

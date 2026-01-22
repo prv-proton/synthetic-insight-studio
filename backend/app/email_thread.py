@@ -61,6 +61,30 @@ EXTRA_PATTERNS: Dict[str, re.Pattern[str]] = {
         r"way|wy|circle|cir)\b",
         re.IGNORECASE,
     ),
+    "PERMIT_NO": re.compile(
+        r"\b(?:bp|dp|sp|lp|fp|ep|rp|pp)\s*-?\s*\d{2}-\d{3,5}\b",
+        re.IGNORECASE,
+    ),
+    "REFERENCE_ID": re.compile(
+        r"\b(?:ref(?:erence)?|file|case|ticket|issue|project|application)\s*(?:no\.?|number|#)?\s*[A-Z0-9]{2,}-\d{3,}\b",
+        re.IGNORECASE,
+    ),
+    "GENERIC_ID": re.compile(
+        r"\b[A-Z]{2,4}-\d{4,}\b",
+        re.IGNORECASE,
+    ),
+    "FIN_AMOUNT": re.compile(
+        r"(\$\s?\d[\d,]*(?:\.\d{2})?)|(\d[\d,]*(?:\.\d{2})?\s?(?:usd|cad|dollars?))",
+        re.IGNORECASE,
+    ),
+    "POLICY_REF": re.compile(
+        r"\b(?:section|sec\.|bylaw|policy|code|ordinance|chapter)\s+[0-9][\w.\-]*",
+        re.IGNORECASE,
+    ),
+    "LEGAL_REF": re.compile(
+        r"\b(?:notice|order|clause|schedule|statute|act|regulation|n\d{1,3}|form\s+[A-Z]?\d+)\b",
+        re.IGNORECASE,
+    ),
 }
 
 
@@ -228,13 +252,18 @@ def _remove_disclaimer_blocks(lines: List[str]) -> Tuple[List[str], bool]:
     skip = False
     for line in lines:
         lower = line.lower()
-        if any(marker in lower for marker in DISCLAIMER_MARKERS):
-            removed = True
-            skip = True
         if not skip:
-            output.append(line)
+            contains_placeholder = "[[" in line and "]]" in line
+            marker_hit = any(marker in lower for marker in DISCLAIMER_MARKERS)
+            if marker_hit and not contains_placeholder and len(lower.split()) >= 5:
+                removed = True
+                skip = True
         if skip and line.strip() == "":
             skip = False
+            continue
+        if skip:
+            continue
+        output.append(line)
     return output, removed
 
 
@@ -245,12 +274,17 @@ def _remove_signature_blocks(lines: List[str]) -> Tuple[List[str], bool]:
     removed = False
     start_index = None
     for idx in range(len(lines) - 1, max(-1, len(lines) - tail_window - 1), -1):
-        if lines[idx].strip().lower() in SIGNATURE_MARKERS:
+        candidate = lines[idx].strip().lower()
+        if candidate in SIGNATURE_MARKERS:
             start_index = idx
             break
     if start_index is not None:
         removed = True
-        return lines[:start_index], removed
+        block_end = start_index
+        # Remove contiguous signature block (e.g., "Thanks," + name) but keep remaining thread
+        while block_end < len(lines) and lines[block_end].strip():
+            block_end += 1
+        return lines[:start_index] + lines[block_end:], removed
     return lines, removed
 
 
