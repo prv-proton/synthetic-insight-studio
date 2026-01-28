@@ -19,6 +19,21 @@ class ThemeSummary(BaseModel):
     meets_k: bool
 
 
+class ThreadContext(BaseModel):
+    stage: str
+    actor_role: str
+    tone: str
+    goals: List[str]
+    constraints: List[str]
+    blockers: List[str]
+    decision_points: List[str]
+    what_they_tried: List[str]
+    what_they_are_asking: List[str]
+    attachments_mentioned: List[str]
+    agencies_or_roles: List[str]
+    timeline_signals: List[str]
+
+
 class ThreadSummary(BaseModel):
     one_sentence: str
     stage: str
@@ -33,7 +48,7 @@ class ThreadSummary(BaseModel):
 
 class Persona(BaseModel):
     persona_name: str
-    role: str
+    from_role: str
     experience_level: str
     primary_motivation: str
     frustrations: List[str]
@@ -47,10 +62,15 @@ class NextQuestions(BaseModel):
     risks_if_ignored: List[str]
 
 
-class ThreadAnalysis(BaseModel):
-    thread_summary: ThreadSummary
-    persona: Persona
-    next_questions: NextQuestions
+class PseudoEmailModel(BaseModel):
+    subject: str
+    from_role: str
+    tone: str
+    body: str
+    attachments_mentioned: List[str]
+    motivations: List[str]
+    decision_points: List[str]
+    assumptions: List[str]
 
 
 class PatternResponse(BaseModel):

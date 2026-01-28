@@ -1,0 +1,30 @@
+{"text":"We are trying to confirm next steps for [ADDRESS] and file [FILE_NO]; our financing window closes in [DATE] so we need clarity on remaining items.","topic":"permit_housing","stage":"in_review","tags":["timeline","financing"]}
+{"text":"Our submission for [ADDRESS] was accepted but we're still missing the drainage comment resolution—can you confirm if a revised plan is required?","topic":"permit_housing","stage":"in_review","tags":["drainage","review"]}
+{"text":"Following up on [FILE_NO]; we uploaded the updated drawings and need confirmation that no additional agency sign-offs are pending.","topic":"permit_housing","stage":"in_review","tags":["agency","status"]}
+{"text":"We need to understand whether the variance request for [ADDRESS] can be reviewed concurrently or if it pauses the main permit.","topic":"permit_housing","stage":"early_inquiry","tags":["variance","process"]}
+{"text":"Our consultant flagged conflicting guidance between planning and engineering; can you advise how to reconcile this?","topic":"permit_housing","stage":"conflict_resolution","tags":["conflict","agencies"]}
+{"text":"We are on a tight schedule and need to know if the resubmission will reset the review clock for [FILE_NO].","topic":"permit_housing","stage":"in_review","tags":["timeline","resubmission"]}
+{"text":"The portal shows 'in review' but we have not received the checklist—can you share the missing items list?","topic":"permit_housing","stage":"in_review","tags":["checklist","status"]}
+{"text":"We have an upcoming inspection and want to confirm the prerequisite documents for final sign-off.","topic":"permit_housing","stage":"closeout","tags":["inspection","closeout"]}
+{"text":"We’re seeking clarity on whether the arborist report is still required for [ADDRESS].","topic":"permit_housing","stage":"in_review","tags":["environment","requirements"]}
+{"text":"Our lender requires proof of permit progress by [DATE]; can you provide an updated timeline?","topic":"permit_housing","stage":"expedite","tags":["financing","timeline"]}
+{"text":"We submitted a revised site plan but are unsure if [ATTACHMENT] was received correctly—can you confirm?","topic":"permit_housing","stage":"in_review","tags":["attachments","submission"]}
+{"text":"We need confirmation that the easement note is acceptable before we proceed with detailed design.","topic":"permit_housing","stage":"in_review","tags":["easement","design"]}
+{"text":"Could you clarify if the fire access comment is resolved with the latest turning template?","topic":"permit_housing","stage":"in_review","tags":["fire","safety"]}
+{"text":"We are preparing a resubmission and want to ensure the latest checklist is still valid.","topic":"permit_housing","stage":"in_review","tags":["checklist","resubmission"]}
+{"text":"We are trying to coordinate multiple agencies and need a single list of remaining items for [FILE_NO].","topic":"permit_housing","stage":"in_review","tags":["coordination","agencies"]}
+{"text":"Can you confirm whether a separate development permit is required for the minor scope change at [ADDRESS]?","topic":"permit_housing","stage":"early_inquiry","tags":["scope","process"]}
+{"text":"We received a request for additional studies; are these mandatory or can we proceed with a waiver?","topic":"permit_housing","stage":"in_review","tags":["studies","requirements"]}
+{"text":"We need guidance on sequencing: should we submit the servicing agreement now or wait for planning comments?","topic":"permit_housing","stage":"early_inquiry","tags":["sequencing","servicing"]}
+{"text":"Our internal deadline is [DATE]; is there a path to expedite the remaining review steps?","topic":"permit_housing","stage":"expedite","tags":["expedite","deadline"]}
+{"text":"We are missing confirmation that the address change was applied to [FILE_NO].","topic":"permit_housing","stage":"in_review","tags":["address","status"]}
+{"text":"We plan to upload a revised landscape plan [ATTACHMENT]—is that sufficient to clear the comment?","topic":"permit_housing","stage":"in_review","tags":["landscape","attachments"]}
+{"text":"Please confirm whether the public works comment still applies after the latest revision.","topic":"permit_housing","stage":"in_review","tags":["public works","review"]}
+{"text":"We are stuck waiting on a utility clearance; can you confirm who the correct reviewer is?","topic":"permit_housing","stage":"in_review","tags":["utilities","contact"]}
+{"text":"We are looking for a consolidated response on outstanding items before we proceed with [ATTACHMENT].","topic":"permit_housing","stage":"in_review","tags":["outstanding","attachments"]}
+{"text":"Our application for [ADDRESS] has been in review for several weeks; is there an updated milestone schedule?","topic":"permit_housing","stage":"in_review","tags":["timeline","status"]}
+{"text":"We received conflicting notes about parking requirements—can you clarify which standard applies?","topic":"permit_housing","stage":"conflict_resolution","tags":["parking","requirements"]}
+{"text":"We need to know whether the heritage review is required given the revised scope.","topic":"permit_housing","stage":"in_review","tags":["heritage","scope"]}
+{"text":"We are preparing final closeout and want to confirm the last inspection steps.","topic":"permit_housing","stage":"closeout","tags":["inspection","closeout"]}
+{"text":"Please advise if [PARCEL_ID] requires an additional servicing agreement before issuance.","topic":"permit_housing","stage":"in_review","tags":["servicing","requirements"]}
+{"text":"We uploaded the corrected drawings but are unsure if the resubmission is complete—can you confirm acceptance?","topic":"permit_housing","stage":"in_review","tags":["resubmission","status"]}
